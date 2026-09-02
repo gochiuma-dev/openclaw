@@ -94,6 +94,21 @@ class GatewayTalkSetupReadinessTest {
   }
 
   @Test
+  fun sttTtsGatewayStartsTalkWithoutARealtimeProvider() {
+    // The reported failure: a Gateway with talk.provider set and realtime.ready false
+    // showed "Configure a Realtime Talk provider on the Gateway" and refused to start,
+    // even though talk.speak worked and the run would never open a relay.
+    val readiness =
+      parseGatewayTalkSetupReadiness(
+        catalog(realtime = providerGroup(id = "openai", label = "OpenAI Realtime", configured = false)),
+      )
+
+    assertTrue(readiness.realtimeTalk.requiresSetup)
+    assertFalse(readiness.talkStartRequiresSetup)
+    assertTrue(readiness.copy(realtimeRelaySelected = true).talkStartRequiresSetup)
+  }
+
+  @Test
   fun browserOnlyModelsSkipAndroidRealtimeRelay() {
     assertFalse(isAndroidRealtimeRelayModelSupported("gpt-live"))
     assertFalse(isAndroidRealtimeRelayModelSupported(" GPT-LIVE-future "))
