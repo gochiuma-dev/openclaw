@@ -97,23 +97,25 @@ class TalkModeConfigParsingTest {
   }
 
   @Test
-  fun selectsRealtimeRelayOnlyForRealtimeMode() {
-    // docs/platforms/android.md: the relay runs only for mode `realtime` on `gateway-relay`.
-    // An stt-tts Gateway speaks through talk.speak and must stay on native Talk.
+  fun explicitNonRealtimeModeLeavesTheRelay() {
+    // Only an explicit selection moves Talk off the relay. An unset mode keeps the shipped
+    // default — TalkModeManagerTest drives a real session with talk.config = {} and expects
+    // realtime Talk to start, so treating "unset" as native would break every current setup.
     fun parse(body: String) = TalkModeGatewayConfigParser.parse(json.parseToJsonElement(body).jsonObject)
 
-    assertTrue(parse("""{"talk":{"realtime":{"mode":"realtime"}}}""").realtimeRelayEligible)
-    assertTrue(
-      parse("""{"talk":{"realtime":{"mode":"realtime","transport":"gateway-relay"}}}""").realtimeRelayEligible,
-    )
     assertFalse(parse("""{"talk":{"realtime":{"mode":"stt-tts"}}}""").realtimeRelayEligible)
     assertFalse(parse("""{"talk":{"realtime":{"mode":"transcription"}}}""").realtimeRelayEligible)
-    // An unset mode is not a realtime selection; native Talk is the documented default.
-    assertFalse(parse("""{"talk":{"realtime":{"model":"gpt-realtime-2.1"}}}""").realtimeRelayEligible)
-    assertFalse(parse("""{"talk":{}}""").realtimeRelayEligible)
-    // A realtime mode carried over a transport the app cannot open is not eligible either.
-    assertFalse(
-      parse("""{"talk":{"realtime":{"mode":"realtime","transport":"webrtc"}}}""").realtimeRelayEligible,
+    assertFalse(parse("""{"talk":{"realtime":{"mode":"STT-TTS"}}}""").realtimeRelayEligible)
+
+    assertTrue(parse("""{"talk":{"realtime":{"mode":"realtime"}}}""").realtimeRelayEligible)
+    assertTrue(parse("""{"talk":{"realtime":{}}}""").realtimeRelayEligible)
+    assertTrue(parse("""{"talk":{}}""").realtimeRelayEligible)
+    assertTrue(parse("""{}""").realtimeRelayEligible)
+
+    // A transport the app cannot open is not a relay either.
+    assertFalse(parse("""{"talk":{"realtime":{"transport":"webrtc"}}}""").realtimeRelayEligible)
+    assertTrue(
+      parse("""{"talk":{"realtime":{"transport":"gateway-relay"}}}""").realtimeRelayEligible,
     )
   }
 
