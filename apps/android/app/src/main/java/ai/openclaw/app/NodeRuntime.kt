@@ -102,13 +102,13 @@ import ai.openclaw.app.node.resolveProfileAccentArgb
 import ai.openclaw.app.systemagent.SystemAgentChatController
 import ai.openclaw.app.systemagent.SystemAgentChatState
 import ai.openclaw.app.systemagent.SystemAgentGatewayAccess
-import ai.openclaw.app.voice.TalkModeGatewayConfigParser
 import ai.openclaw.app.voice.AndroidOnDeviceVoiceWakeRecognizer
 import ai.openclaw.app.voice.GatewayTranscriptionSession
 import ai.openclaw.app.voice.MicCaptureManager
 import ai.openclaw.app.voice.PreviewVoiceWakeRecognizer
 import ai.openclaw.app.voice.SystemSpeechSpeaker
 import ai.openclaw.app.voice.TalkAudioPlayer
+import ai.openclaw.app.voice.TalkModeGatewayConfigParser
 import ai.openclaw.app.voice.TalkModeManager
 import ai.openclaw.app.voice.TalkPttOnceStart
 import ai.openclaw.app.voice.TalkPttStopPayload
@@ -6688,7 +6688,12 @@ class NodeRuntime private constructor(
     val relaySelected =
       try {
         val response = requestGatewayData(gatewayScope, "talk.config", "{}")
-        val config = json.parseToJsonElement(response).asObjectOrNull()?.get("config").asObjectOrNull()
+        val config =
+          json
+            .parseToJsonElement(response)
+            .asObjectOrNull()
+            ?.get("config")
+            .asObjectOrNull()
         TalkModeGatewayConfigParser.parse(config).realtimeRelayEligible
       } catch (_: Throwable) {
         false
