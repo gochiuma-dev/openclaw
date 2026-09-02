@@ -100,7 +100,10 @@ class GatewayTalkSetupReadinessTest {
     // even though talk.speak worked and the run would never open a relay.
     val readiness =
       parseGatewayTalkSetupReadiness(
-        catalog(realtime = providerGroup(id = "openai", label = "OpenAI Realtime", configured = false)),
+        catalog(
+          realtime = providerGroup(id = "openai", label = "OpenAI Realtime", configured = false),
+          transcription = providerGroup(id = "deepgram", label = "Deepgram", configured = true),
+        ),
       )
 
     assertTrue(readiness.realtimeTalk.requiresSetup)

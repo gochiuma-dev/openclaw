@@ -47,8 +47,8 @@ internal object TalkModeGatewayConfigParser {
             ?.get("model")
             .asStringOrNull()
         }
-    val realtimeMode = realtime?.get("mode").asStringOrNull()?.trim()?.lowercase(Locale.US)
-    val realtimeTransport = realtime?.get("transport").asStringOrNull()?.trim()?.lowercase(Locale.US)
+    val realtimeMode = normalizeTalkRealtimeToken(realtime?.get("mode"))
+    val realtimeTransport = normalizeTalkRealtimeToken(realtime?.get("transport"))
     // An unset transport is the relay default the app itself sends when it opens a session.
     val relayTransport = realtimeTransport == null || realtimeTransport == "gateway-relay"
     val sessionCfg = config?.get("session").asObjectOrNull()
@@ -61,6 +61,14 @@ internal object TalkModeGatewayConfigParser {
       realtimeRelayEligible = realtimeMode == "realtime" && relayTransport,
     )
   }
+
+  /** Lowercases a realtime selector so config casing never changes the routing decision. */
+  private fun normalizeTalkRealtimeToken(element: JsonElement?): String? =
+    element
+      .asStringOrNull()
+      ?.trim()
+      ?.takeIf(String::isNotEmpty)
+      ?.lowercase(Locale.US)
 
   /** Accepts only numeric whole-millisecond silence timeouts; malformed config uses defaults. */
   fun resolvedSilenceTimeoutMs(talk: JsonObject?): Long {
