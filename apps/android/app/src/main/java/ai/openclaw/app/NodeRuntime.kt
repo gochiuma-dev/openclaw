@@ -6552,7 +6552,7 @@ class NodeRuntime private constructor(
             .asObjectOrNull()
         TalkModeGatewayConfigParser.parse(config).realtimeRelayEligible
       } catch (_: Throwable) {
-        false
+        true
       }
     val readiness =
       try {

@@ -16,12 +16,16 @@ internal data class TalkModeGatewayConfigState(
   val silenceTimeoutMs: Long,
   val realtimeRelayModelSupported: Boolean,
   /**
-   * True only when the Gateway actually selects the realtime relay.
+   * False once the Gateway explicitly selects a non-realtime Talk mode.
    *
-   * docs/platforms/android.md: Android Talk uses the realtime Gateway relay only when
-   * `talk.realtime.mode` is `realtime` and `talk.realtime.transport` is `gateway-relay`.
-   * Every other configuration — including an unset mode — stays on native Talk
-   * (device speech recognition + `chat.send` + `talk.speak`).
+   * `talk.realtime.mode` is the Gateway's own selector (`realtime`, `stt-tts`,
+   * `transcription`). A Gateway on `stt-tts` speaks through `talk.speak` and never opens a
+   * relay, so asking it for one just fails and turns Talk off.
+   *
+   * An **unset** mode stays on the relay. docs/platforms/android.md claims native Talk is
+   * the default, but the shipped contract is the opposite: TalkModeManagerTest drives a
+   * real session with `talk.config` = `{}` and expects realtime Talk to start. Only an
+   * explicit selection is acted on here, so no existing setup changes behaviour.
    */
   val realtimeRelayEligible: Boolean,
 )
@@ -58,7 +62,7 @@ internal object TalkModeGatewayConfigParser {
       interruptOnSpeech = talk?.get("interruptOnSpeech").asBooleanOrNull(),
       silenceTimeoutMs = resolvedSilenceTimeoutMs(talk),
       realtimeRelayModelSupported = isAndroidRealtimeRelayModelSupported(realtimeModel),
-      realtimeRelayEligible = realtimeMode == "realtime" && relayTransport,
+      realtimeRelayEligible = realtimeMode != "stt-tts" && realtimeMode != "transcription" && relayTransport,
     )
   }
 

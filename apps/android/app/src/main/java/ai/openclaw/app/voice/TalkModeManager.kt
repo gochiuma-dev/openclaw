@@ -334,10 +334,9 @@ class TalkModeManager internal constructor(
   private var speechLocale: String? = null
   private var realtimeRelayModelSupported = true
 
-  // Native Talk is the safe default: it degrades to device TTS when `talk.speak` is
-  // unavailable, while the relay just fails and turns Talk off. A config read that
-  // never landed must not send us down the path that cannot recover.
-  private var realtimeRelayEligible = false
+  // Matches the shipped default: only an explicit non-realtime `talk.realtime.mode`
+  // moves Talk off the relay. A config read that never landed keeps the old behaviour.
+  private var realtimeRelayEligible = true
 
   @Volatile private var pendingRunId: String? = null
   private var pendingFinal: CompletableDeferred<Boolean>? = null
@@ -3057,7 +3056,7 @@ class TalkModeManager internal constructor(
       silenceWindowMs = TalkDefaults.defaultSilenceTimeoutMs
       speechLocale = null
       realtimeRelayModelSupported = true
-      realtimeRelayEligible = false
+      realtimeRelayEligible = true
       configLoaded = false
     }
   }
