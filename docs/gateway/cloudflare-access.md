@@ -134,6 +134,13 @@ the WebSocket upgrade. Configure `gateway.remote.edgeAuth` as described in
 
 **Nodes.** Follow the choice made in step 4.
 
+**Android.** The companion app has no browser cookie jar either, so it sends the service
+token on the WebSocket upgrade. In the app, open the gateway connect form (onboarding, or
+Settings → Gateway → Manual Gateway), expand **Advanced connection headers**, and fill in
+the **Cloudflare Access service token** Client Id and Client Secret. They expand to the
+`CF-Access-Client-Id` and `CF-Access-Client-Secret` headers, which the app then sends on
+every request to that gateway. See [Android](/platforms/android#gateways-behind-an-identity-aware-proxy).
+
 ## Verify
 
 ```bash
@@ -163,13 +170,15 @@ satisfied — an unauthenticated request never gets that far.
 
 ## Troubleshooting
 
-| Symptom                                                             | Cause and fix                                                                                                                                     |
-| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `gateway rejected websocket upgrade (HTTP 302)` from the CLI or TUI | Access intercepted the upgrade. Configure `gateway.remote.edgeAuth`; see [Remote access](/gateway/remote#gateway-behind-an-identity-aware-proxy). |
-| Browser works, `openclaw connect` fails                             | Node routes are still behind Access. Apply one of the options in step 4.                                                                          |
-| `Exec provider ... exited with code 1`                              | The exec secret provider runs with a scrubbed environment; `cloudflared` needs `passEnv: ["HOME"]` to read its cached token.                      |
-| `secrets.providers.*.command must not be a symlink`                 | Point `command` at the resolved binary, not a package-manager symlink.                                                                            |
-| Gateway starts but every request is anonymous                       | `allowLoopback` is unset, so headers from the local `cloudflared` are ignored.                                                                    |
+| Symptom                                                                  | Cause and fix                                                                                                                                     |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gateway rejected websocket upgrade (HTTP 302)` from the CLI or TUI      | Access intercepted the upgrade. Configure `gateway.remote.edgeAuth`; see [Remote access](/gateway/remote#gateway-behind-an-identity-aware-proxy). |
+| `the edge redirected the connection (HTTP 302)` in the Android app       | Same cause. Add the service token under Advanced connection headers; see [Android](/platforms/android#gateways-behind-an-identity-aware-proxy).   |
+| `the edge rejected the connection headers (HTTP 403)` in the Android app | The token reached Access but the policy refused it. Check the service token is not revoked and that a policy includes it.                         |
+| Browser works, `openclaw connect` fails                                  | Node routes are still behind Access. Apply one of the options in step 4.                                                                          |
+| `Exec provider ... exited with code 1`                                   | The exec secret provider runs with a scrubbed environment; `cloudflared` needs `passEnv: ["HOME"]` to read its cached token.                      |
+| `secrets.providers.*.command must not be a symlink`                      | Point `command` at the resolved binary, not a package-manager symlink.                                                                            |
+| Gateway starts but every request is anonymous                            | `allowLoopback` is unset, so headers from the local `cloudflared` are ignored.                                                                    |
 
 ## Related
 
