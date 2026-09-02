@@ -1691,6 +1691,14 @@ private fun GatewaySettingsScreen(
   var showSetupCodeHelp by remember { mutableStateOf(false) }
   var pendingSetupResetPlan by remember { mutableStateOf<GatewayConnectPlan?>(null) }
   var pendingForgetStableId by remember { mutableStateOf<String?>(null) }
+  val savedGatewayStableId =
+    remember(manualHost, manualPort, manualTls) {
+      GatewayEndpoint.manual(host = manualHost, port = manualPort, tlsEnabled = manualTls).stableId
+    }
+  var headerEditor by remember(savedGatewayStableId) { mutableStateOf(GatewayHeaderEditorState()) }
+  LaunchedEffect(savedGatewayStableId) {
+    headerEditor = gatewayHeaderEditorState(viewModel.gatewayCustomHeaderNames(savedGatewayStableId))
+  }
   val transport =
     remember(hostInput, tlsInput) {
       gatewayManualTransportPresentation(
@@ -1702,6 +1710,7 @@ private fun GatewaySettingsScreen(
   fun saveAndConnect(plan: GatewayConnectPlan) {
     validationText = null
     viewModel.saveGatewayConfigAndConnect(plan)
+    headerEditor = headerEditor.committed()
   }
 
   pendingSetupResetPlan?.let { plan ->
@@ -1783,6 +1792,7 @@ private fun GatewaySettingsScreen(
         tokenInput = "",
         bootstrapTokenInput = "",
         passwordInput = "",
+        customHeaderDrafts = headerEditor.drafts(),
       )
     if (plan == null) {
       validationText = nativeString("Enter a valid setup code or gateway address.")
@@ -1999,6 +2009,10 @@ private fun GatewaySettingsScreen(
           ClawTextField(value = bootstrapTokenInput, onValueChange = { bootstrapTokenInput = it }, placeholder = nativeString("Bootstrap"), modifier = Modifier.weight(1.05f), secret = true)
         }
         ClawTextField(value = passwordInput, onValueChange = { passwordInput = it }, placeholder = nativeString("Password"), secret = true)
+        GatewayAdvancedHeadersSection(
+          state = headerEditor,
+          onStateChange = { headerEditor = it },
+        )
         validationText?.let {
           Text(text = it, style = ClawTheme.type.caption, color = ClawTheme.colors.warning)
         }
@@ -2018,6 +2032,7 @@ private fun GatewaySettingsScreen(
                 tokenInput = tokenInput,
                 bootstrapTokenInput = bootstrapTokenInput,
                 passwordInput = passwordInput,
+                customHeaderDrafts = headerEditor.drafts(),
               )
             if (plan == null) {
               validationText = nativeString("Enter a valid setup code or gateway address.")
