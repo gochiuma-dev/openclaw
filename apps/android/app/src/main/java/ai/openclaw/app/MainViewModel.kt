@@ -25,6 +25,7 @@ import ai.openclaw.app.chat.SessionRewindResult
 import ai.openclaw.app.chat.defaultChatThinkingLevelSelection
 import ai.openclaw.app.chat.resolveChatComposerOwner
 import ai.openclaw.app.gateway.GatewayEndpoint
+import ai.openclaw.app.gateway.GatewayCustomHeaders
 import ai.openclaw.app.gateway.GatewayMediaKind
 import ai.openclaw.app.gateway.GatewayRegistryEntry
 import ai.openclaw.app.gateway.GatewayRegistryEntryKind
@@ -746,6 +747,13 @@ class MainViewModel private constructor(
     prefs.setManualTls(value)
   }
 
+  /**
+   * Names of the edge-proxy headers stored for one gateway. Only the names cross into the UI:
+   * the values are credentials, and the editor is built so it never needs to read one back.
+   */
+  internal suspend fun gatewayCustomHeaderNames(stableId: String): List<String> =
+    withContext(Dispatchers.IO) { prefs.loadGatewayCustomHeaders(stableId).keys.toList() }
+
   /** Clears setup credentials without starting the runtime just to discard first-run pairing auth. */
   private suspend fun resetGatewaySetupAuth(stableId: String): Boolean {
     val reset = nodeApp.resetGatewaySetupAuth(stableId)
@@ -835,6 +843,19 @@ class MainViewModel private constructor(
           token = config.token,
           bootstrapToken = config.bootstrapToken,
           password = config.password,
+        )
+      }
+
+      // Edge headers are keyed by the resolved endpoint, so they are written only once the
+      // stable id above is final. Merging keeps a blank field meaning "keep the stored value".
+      if (config.customHeaders.isNotEmpty()) {
+        prefs.saveGatewayCustomHeaders(
+          stableId = endpoint.stableId,
+          headers =
+            GatewayCustomHeaders.merged(
+              stored = prefs.loadGatewayCustomHeaders(endpoint.stableId),
+              drafts = config.customHeaders,
+            ),
         )
       }
 

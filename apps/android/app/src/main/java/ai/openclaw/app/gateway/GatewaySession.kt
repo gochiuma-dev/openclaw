@@ -959,6 +959,10 @@ class GatewaySession(
     private val client: OkHttpClient = buildClient()
     private val listener = Listener()
     private var socket: WebSocket? = null
+
+    // Whether this upgrade carried operator headers. Diagnostics only; the values never leave
+    // the request builder, so an edge rejection can be explained without quoting a secret.
+    @Volatile private var sentCustomHeaders = false
     private val loggerTag = "OpenClawGateway"
     private val incomingMessages = Channel<String>(Channel.UNLIMITED)
     private var lastEventSequence: Long? = null
@@ -992,6 +996,9 @@ class GatewaySession(
           tls = target.tls,
           customHeadersProvider = customHeadersProvider,
         )
+      // Operator headers are the only fields that builder sets, so the count is the diagnostic
+      // signal an edge rejection needs. Names and values stay out of the failure path.
+      sentCustomHeaders = request.headers.size > 0
       socket = client.newWebSocket(request, listener)
       return connectDeferred.await()
     }
@@ -1308,7 +1315,12 @@ class GatewaySession(
         response: Response?,
       ) {
         finishTransport(
-          message = "Gateway error: ${t.message ?: t::class.java.simpleName}",
+          message =
+            gatewayTransportFailureMessage(
+              error = t,
+              responseCode = response?.code,
+              sentCustomHeaders = sentCustomHeaders,
+            ),
           connectError = t,
         )
       }
@@ -2227,7 +2239,11 @@ internal fun buildGatewayWebSocketUrl(
   return "$scheme://${formatGatewayAuthority(host, port)}$path"
 }
 
-/** Builds one gateway upgrade request without exposing proxy credentials to cleartext routes. */
+/**
+ * Builds one gateway upgrade request without exposing proxy credentials to cleartext routes.
+ * Operator headers are the only fields set here; [GatewaySession] reads the resulting header
+ * count to tell whether a rejected upgrade had edge credentials attached.
+ */
 internal fun buildGatewayWebSocketUpgradeRequest(
   endpoint: GatewayEndpoint,
   tls: GatewayTlsParams?,

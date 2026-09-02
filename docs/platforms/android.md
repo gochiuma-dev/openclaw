@@ -255,6 +255,51 @@ with `openclaw qr`, then scan or paste it on that page and reconnect. Operators
 who want the reduced profile can select **Limited access** in Control UI or run
 `openclaw qr --limited`.
 
+### Gateways behind an identity-aware proxy
+
+If Cloudflare Access — or any reverse proxy that authenticates before it forwards — fronts
+the Gateway, the WebSocket upgrade is answered with a redirect to the proxy's login page
+instead of the Gateway. The app has no browser cookie jar, so it must present the proxy's
+credential as request headers.
+
+Expand **Advanced connection headers** on the connect form. It appears on the setup-code
+screen and the manual screen during first-run setup, and under **Settings → Gateway →
+Manual Gateway** afterwards.
+
+- **Cloudflare Access service token** — enter the Client Id and Client Secret. They expand
+  to the `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers, so you never type the
+  header names yourself.
+- **Custom headers** — for any other edge, add the name/value pairs the proxy expects. This
+  is the same mechanism; the Cloudflare fields are a shortcut over it.
+
+Headers are stored per gateway in the app's encrypted credential store, alongside the
+device token and TLS pin, and are sent with every request to that gateway. They are sent
+only over TLS: a `ws://` connection to a LAN or loopback host never reads them, so a
+plaintext endpoint cannot be used to collect a service token.
+
+These headers get the connection past the edge. They do not replace OpenClaw's own
+authentication — the gateway token and device pairing approval are still required.
+
+Values are write-only in the UI. A saved field shows **Saved — type to replace** rather
+than the stored value; leave it blank to keep the current secret, type to replace it, or
+use the remove action to clear it. Forgetting a gateway removes its headers with the rest
+of its credentials.
+
+Connection failures name the edge when it is the one refusing:
+
+| Message                                                   | Cause and fix                                                                                                        |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `the edge redirected the connection (HTTP 302)`           | No headers configured, or the proxy did not accept them. Add or correct the service token.                           |
+| `the edge rejected the connection headers (HTTP 401/403)` | The token reached the proxy but its policy refused it. Check the token is not revoked and that a policy includes it. |
+
+These headers cover the app's own gateway transport: the node/operator WebSocket and the
+media transfers that ride the same connection. The embedded Control UI pages (Desktop,
+Session dashboard, Terminal) are rendered by a WebView, which keeps its own cookie jar, so
+an Access-protected instance shows the Access login page inside that view and you sign in
+there instead.
+
+See [Cloudflare Access](/gateway/cloudflare-access) for the Gateway-side configuration.
+
 ### Manage paired gateways
 
 The app keeps a registry of every gateway it has paired with, so you can keep operator sessions connected and change focus without pairing again:
