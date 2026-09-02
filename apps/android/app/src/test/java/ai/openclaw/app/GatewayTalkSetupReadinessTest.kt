@@ -107,8 +107,10 @@ class GatewayTalkSetupReadinessTest {
       )
 
     assertTrue(readiness.realtimeTalk.requiresSetup)
-    assertFalse(readiness.talkStartRequiresSetup)
-    assertTrue(readiness.copy(realtimeRelaySelected = true).talkStartRequiresSetup)
+    // Default (relay selected): the gate stands, as it does today.
+    assertTrue(readiness.talkStartRequiresSetup)
+    // stt-tts Gateway: the run never opens a relay, so realtime setup cannot block it.
+    assertFalse(readiness.copy(realtimeRelaySelected = false).talkStartRequiresSetup)
   }
 
   @Test

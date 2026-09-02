@@ -315,12 +315,10 @@ class TalkModeManager internal constructor(
   private val speechLocale get() = configCache.get().value.speechLocale
   private val realtimeRelayModelSupported get() = configCache.get().value.realtimeRelayModelSupported
 
-  // Native Talk is the safe default: it degrades to device TTS when `talk.speak` is
-  // unavailable, while the relay just fails and turns Talk off. A config read that
-  // never landed must not send us down the path that cannot recover, so unlike the
-  // sibling getters this one requires a loaded cache instead of a parsed default.
-  private val realtimeRelayEligible
-    get() = configCache.get().let { it.loaded && it.value.realtimeRelayEligible }
+  // Matches the shipped default: only an explicit non-realtime `talk.realtime.mode`
+  // moves Talk off the relay. A config read that never landed keeps the old behaviour,
+  // because the parser's own default for an absent config is already relay-eligible.
+  private val realtimeRelayEligible get() = configCache.get().value.realtimeRelayEligible
 
   @Volatile private var pendingRunId: String? = null
   private var pendingFinal: CompletableDeferred<Boolean>? = null
