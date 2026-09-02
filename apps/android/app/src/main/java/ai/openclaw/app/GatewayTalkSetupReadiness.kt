@@ -16,7 +16,19 @@ import kotlinx.serialization.json.booleanOrNull
 data class GatewayTalkSetupReadiness(
   val realtimeTalk: GatewayTalkSetupState,
   val dictation: GatewayTalkSetupState,
+  /**
+   * True only when the Gateway selects the realtime relay (`talk.realtime.mode == "realtime"`).
+   *
+   * Talk startup must not demand a realtime provider the run will never use. A Gateway on
+   * `stt-tts` speaks through `talk.speak`, and the app falls back to device TTS when that
+   * is unavailable, so nothing about realtime readiness can block it.
+   */
+  val realtimeRelaySelected: Boolean = false,
 ) {
+  /** Blocks Talk only for the setup the selected mode actually needs. */
+  val talkStartRequiresSetup: Boolean
+    get() = realtimeRelaySelected && realtimeTalk.requiresSetup
+
   companion object {
     fun unverified(
       issue: GatewayTalkSetupIssue = GatewayTalkSetupIssue.CatalogNotLoaded,

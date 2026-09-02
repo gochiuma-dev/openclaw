@@ -101,6 +101,7 @@ import ai.openclaw.app.node.resolveProfileAccentArgb
 import ai.openclaw.app.systemagent.SystemAgentChatController
 import ai.openclaw.app.systemagent.SystemAgentChatState
 import ai.openclaw.app.systemagent.SystemAgentGatewayAccess
+import ai.openclaw.app.voice.TalkModeGatewayConfigParser
 import ai.openclaw.app.voice.AndroidOnDeviceVoiceWakeRecognizer
 import ai.openclaw.app.voice.GatewayTranscriptionSession
 import ai.openclaw.app.voice.MicCaptureManager
@@ -6537,10 +6538,22 @@ class NodeRuntime private constructor(
       _talkSetupReadiness.value = GatewayTalkSetupReadiness.unverified()
       return
     }
+    // The catalog reports which providers exist; only talk.config says which mode the
+    // Gateway will actually run. Talk startup needs both, or it blocks on realtime setup
+    // that an stt-tts Gateway never uses.
+    val relaySelected =
+      try {
+        val response = requestGatewayData(gatewayScope, "talk.config", "{}")
+        val config = json.parseToJsonElement(response).asObjectOrNull()?.get("config").asObjectOrNull()
+        TalkModeGatewayConfigParser.parse(config).realtimeRelayEligible
+      } catch (_: Throwable) {
+        false
+      }
     val readiness =
       try {
         val response = requestGatewayData(gatewayScope, "talk.catalog", "{}")
         parseGatewayTalkSetupReadiness(json.parseToJsonElement(response).asObjectOrNull())
+          .copy(realtimeRelaySelected = relaySelected)
       } catch (_: Throwable) {
         GatewayTalkSetupReadiness.unverified(GatewayTalkSetupIssue.CatalogLoadFailed)
       }
