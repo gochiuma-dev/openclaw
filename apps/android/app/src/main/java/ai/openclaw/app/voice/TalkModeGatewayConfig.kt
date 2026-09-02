@@ -15,6 +15,15 @@ internal data class TalkModeGatewayConfigState(
   val interruptOnSpeech: Boolean?,
   val silenceTimeoutMs: Long,
   val realtimeRelayModelSupported: Boolean,
+  /**
+   * True only when the Gateway actually selects the realtime relay.
+   *
+   * docs/platforms/android.md: Android Talk uses the realtime Gateway relay only when
+   * `talk.realtime.mode` is `realtime` and `talk.realtime.transport` is `gateway-relay`.
+   * Every other configuration — including an unset mode — stays on native Talk
+   * (device speech recognition + `chat.send` + `talk.speak`).
+   */
+  val realtimeRelayEligible: Boolean,
 )
 
 internal object TalkModeGatewayConfigParser {
@@ -44,15 +53,22 @@ internal object TalkModeGatewayConfigParser {
             ?.get("model")
             .asStringOrNull()
         }
+    val realtimeMode = realtime?.get("mode").asStringOrNull()?.trim()?.lowercase(Locale.US)
+    val realtimeTransport = realtime?.get("transport").asStringOrNull()?.trim()?.lowercase(Locale.US)
+    // An unset transport is the relay default the app itself sends when it opens a session.
+    val relayTransport = realtimeTransport == null || realtimeTransport == "gateway-relay"
     val sessionCfg = config?.get("session").asObjectOrNull()
     return TalkModeGatewayConfigState(
       mainSessionKey = normalizeMainKey(sessionCfg?.get("mainKey").asStringOrNull()),
       speechLocale = normalizeSpeechLocaleTag(talk?.get("speechLocale").asStringOrNull()),
       interruptOnSpeech = talk?.get("interruptOnSpeech").asBooleanOrNull(),
       silenceTimeoutMs = resolvedSilenceTimeoutMs(talk),
+      // 上流はゲートウェイのヒントを優先するようになった。そちらを残しつつ、
+      // realtimeRelayEligible（こちらの追加）は上流に無いので併せて渡す。
       realtimeRelayModelSupported =
         realtimeClientHints?.get("gatewayRelaySupported").asBooleanOrNull()
           ?: isAndroidRealtimeRelayModelSupported(realtimeModel),
+      realtimeRelayEligible = realtimeMode == "realtime" && relayTransport,
     )
   }
 
