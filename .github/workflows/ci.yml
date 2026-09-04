@@ -1,4 +1,5 @@
 name: CI
+# Keep this workflow touched in fork maintenance commits so GitHub refreshes its workflow index.
 
 on:
   workflow_dispatch:
