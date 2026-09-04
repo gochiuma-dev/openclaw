@@ -16,4 +16,10 @@ describe("voice-call allowlist", () => {
     expect(isAllowlistedCaller("", ["+1 (415) 555-0123"])).toBe(false);
     expect(isAllowlistedCaller("14155550123", ["", "abc"])).toBe(false);
   });
+
+  it("matches Japanese domestic mobile numbers to their E.164 allowlist entry", () => {
+    expect(isAllowlistedCaller("07028139161", ["+817028139161"])).toBe(true);
+    expect(isAllowlistedCaller("+817028139161", ["+817028139161"])).toBe(true);
+    expect(isAllowlistedCaller("07028139161", ["+818028139161"])).toBe(false);
+  });
 });

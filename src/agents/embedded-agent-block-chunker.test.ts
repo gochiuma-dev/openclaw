@@ -56,6 +56,22 @@ describe("EmbeddedBlockChunker", () => {
     },
   );
 
+  it("breaks streamed Japanese replies at sentence endings", () => {
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 8,
+      maxChars: 120,
+      breakPreference: "sentence",
+    });
+
+    chunker.append("私はclaw（🦀）といいます。ご用件をお聞かせください。必要ならお手伝いします。");
+
+    expect(drainChunks(chunker)).toEqual(["私はclaw（🦀）といいます。"]);
+    expect(chunker.bufferedText).toBe("ご用件をお聞かせください。必要ならお手伝いします。");
+    expect(drainChunks(chunker, true)).toEqual([
+      "ご用件をお聞かせください。必要ならお手伝いします。",
+    ]);
+  });
+
   it("buffers without chunking and replaces a native source suffix before or after a drain", () => {
     const chunker = new EmbeddedBlockChunker();
     chunker.append("Earlier ");

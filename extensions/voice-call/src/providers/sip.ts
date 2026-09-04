@@ -81,6 +81,8 @@ type CallState = {
   transcribing: boolean;
   /** Feeds silence while nobody is speaking; Asterisk hangs up on a starved socket. */
   keepalive?: NodeJS.Timeout;
+  /** TTS synthesis may run ahead of playback, but audio must remain FIFO. */
+  ttsTail: Promise<void>;
 };
 
 /** Pending metadata the dialplan posts before AudioSocket connects. */
@@ -217,21 +219,35 @@ export class SipProvider implements VoiceCallProvider {
     if (!text) {
       return;
     }
-    const audio = await this.synthesize(text, input.voice);
-    if (!audio.length) {
-      return;
-    }
-    call.playing = true;
-    try {
-      await this.streamAudio(call, audio);
-    } finally {
-      // Whatever the microphone picked up while we spoke is our own voice.
-      call.speech = [];
-      call.speechBytes = 0;
-      call.speaking = false;
-      call.silenceMs = 0;
-      call.playing = false;
-    }
+    // Start synthesis before waiting for earlier audio to finish. This is the
+    // important part of sentence-level pre-synthesis: sentence N+1 is being
+    // rendered while sentence N is streamed to Asterisk.
+    const audioPromise = this.synthesize(text, input.voice);
+    // The queue may be busy playing an earlier sentence. Attach a rejection
+    // handler now as synthesis can finish (or fail) before that sentence's
+    // playback slot is reached.
+    void audioPromise.catch(() => undefined);
+    const playback = call.ttsTail.then(async () => {
+      const audio = await audioPromise;
+      if (!audio.length || call.socket.destroyed) {
+        return;
+      }
+      call.playing = true;
+      try {
+        await this.streamAudio(call, audio);
+      } finally {
+        // Whatever the microphone picked up while we spoke is our own voice.
+        call.speech = [];
+        call.speechBytes = 0;
+        call.speaking = false;
+        call.silenceMs = 0;
+        call.playing = false;
+      }
+    });
+    // Keep the chain alive after one failed sentence so a later queued
+    // sentence is still attempted and no unhandled rejection is produced.
+    call.ttsTail = playback.catch(() => undefined);
+    await playback;
   }
 
   async startListening(input: StartListeningInput): Promise<void> {
@@ -329,6 +345,7 @@ export class SipProvider implements VoiceCallProvider {
       listening: true,
       playing: false,
       transcribing: false,
+      ttsTail: Promise.resolve(),
     };
     this.calls.set(providerCallId, call);
     // Asterisk reads this socket continuously and drops the call when a read
