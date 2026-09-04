@@ -322,7 +322,15 @@ function readCallRecordEvents(stores: CallRecordStateStores): CallRecord[] {
     .map((entry) => entry.call);
 }
 
-/** Persist one call record event to plugin state. */
+/**
+ * Persist one call record event to plugin state.
+ *
+ * A failed write must not end the call. The keyed store is refused outright for
+ * plugins the runtime cannot verify, and rethrowing there took the whole
+ * gateway down mid-call. The restore path already logs and continues; this
+ * matches it. Losing the log is worse than nothing, but not worse than
+ * dropping the call.
+ */
 export function persistCallRecord(storePath: string, call: CallRecord): void {
   try {
     const stores = createCallRecordStateStores(storePath);
@@ -330,7 +338,6 @@ export function persistCallRecord(storePath: string, call: CallRecord): void {
     registerCallRecordEvent(stores, buildNewEventKey(order), call, order);
   } catch (err) {
     console.error("[voice-call] Failed to persist call record:", err);
-    throw err;
   }
 }
 
@@ -397,7 +404,13 @@ function readCallHistoryFromStore(storePath: string): CallRecord[] {
 /** Resolve an internal ID or retained provider alias to its newest logical call snapshot. */
 export function findCallInStore(storePath: string, callId: string): CallRecord | undefined {
   // Admission and status must distinguish unavailable history from an absent call.
-  const calls = readCallRecordEvents(createCallRecordStateStores(storePath));
+  // An unverified plugin cannot open the keyed store at all; treating that as
+  // "no history" keeps the call alive instead of ending it with a crash.
+  const stores = tryCreateCallRecordStateStores(storePath);
+  if (!stores) {
+    return undefined;
+  }
+  const calls = readCallRecordEvents(stores);
   const match =
     calls.findLast((call) => call.callId === callId) ??
     calls.findLast((call) => call.providerCallId === callId);
