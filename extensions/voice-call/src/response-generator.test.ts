@@ -50,10 +50,16 @@ type EmbeddedAgentArgs = {
   senderIsOwner?: boolean;
   toolsAllow?: string[];
   blockReplyBreak?: "text_end" | "message_end";
+  blockReplyChunking?: {
+    minChars: number;
+    maxChars: number;
+    breakPreference?: "paragraph" | "newline" | "sentence";
+  };
   onBlockReply?: (
     payload: Record<string, unknown>,
     context?: { assistantMessageIndex?: number },
   ) => void;
+  onPartialReply?: (payload: { text?: string }) => void | Promise<void>;
   onBlockReplyFlush?: (
     context:
       | { reason: "message_end" | "terminal" }
@@ -64,7 +70,10 @@ type EmbeddedAgentArgs = {
 
 function createAgentRuntime(
   payloads: Array<Record<string, unknown>>,
-  options?: { blockReplyPayloads?: Array<Record<string, unknown>> },
+  options?: {
+    blockReplyPayloads?: Array<Record<string, unknown>>;
+    partialReplyPayloads?: Array<{ text?: string }>;
+  },
 ) {
   const sessionStore: Record<string, TestSessionEntry> = {};
   const saveSessionStore = vi.fn(async () => {});
@@ -102,6 +111,9 @@ function createAgentRuntime(
     },
   );
   const runEmbeddedAgent = vi.fn(async (args: EmbeddedAgentArgs) => {
+    for (const payload of options?.partialReplyPayloads ?? []) {
+      await args.onPartialReply?.(payload);
+    }
     for (const payload of options?.blockReplyPayloads ?? []) {
       args.onBlockReply?.(payload, { assistantMessageIndex: 0 });
     }
@@ -274,7 +286,7 @@ describe("generateVoiceResponse", () => {
     expect(args.extraSystemPrompt).not.toContain(currentCallerSpeech);
     expect(args.extraSystemPrompt).toContain("helpful voice assistant on a phone call");
     expect(args.extraSystemPrompt).toContain("untrusted conversation data");
-    expect(args.extraSystemPrompt).toContain("Return only valid JSON in this exact shape");
+    expect(args.extraSystemPrompt).toContain("Return only the words that should be spoken");
   });
 
   it("does not replay cumulative call history after the first caller turn", async () => {
@@ -334,7 +346,7 @@ describe("generateVoiceResponse", () => {
     expect(result.text).toBe("Hello from JSON.");
     expect(runEmbeddedAgent).toHaveBeenCalledTimes(1);
     const args = requireEmbeddedAgentArgs(runEmbeddedAgent);
-    expect(args.extraSystemPrompt).toContain('{"spoken":"..."}');
+    expect(args.extraSystemPrompt).toContain("do not return JSON");
     expect(args.provider).toBe("together");
     expect(args.model).toBe("Qwen/Qwen2.5-7B-Instruct-Turbo");
     expect(args.abortSignal).toBeInstanceOf(AbortSignal);
@@ -402,6 +414,47 @@ describe("generateVoiceResponse", () => {
     });
   });
 
+  it("delivers plain Japanese blocks to TTS one sentence at a time", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime([]);
+    runEmbeddedAgent.mockImplementationOnce(async (args: EmbeddedAgentArgs) => {
+      args.onBlockReply?.({
+        text: "私はclaw（🦀）といいます。ご用件をお聞かせください。",
+      });
+      await args.onBlockReplyFlush?.({ reason: "pre_compaction", attemptAccepted: true });
+      return { payloads: [], meta: { durationMs: 12, aborted: false } };
+    });
+    const delivered: string[] = [];
+    const onEarlyText = vi.fn(async (text: string) => {
+      delivered.push(text);
+      return true;
+    });
+
+    const { result } = await runGenerateVoiceResponse([], { runtime, onEarlyText });
+
+    expect(delivered).toEqual(["私はclaw（🦀）といいます。", "ご用件をお聞かせください。"]);
+    expect(result).toEqual({
+      text: "私はclaw（🦀）といいます。 ご用件をお聞かせください。",
+      deliveredEarly: true,
+    });
+  });
+
+  it("starts TTS from streamed Japanese partials before the final response", async () => {
+    const fullText = "確認しました。現在の温度は24度です。";
+    const { runtime } = createAgentRuntime([{ text: fullText }], {
+      partialReplyPayloads: [{ text: "確認しました。" }, { text: fullText }],
+    });
+    const delivered: string[] = [];
+    const onEarlyText = vi.fn(async (text: string) => {
+      delivered.push(text);
+      return true;
+    });
+
+    const { result } = await runGenerateVoiceResponse([], { runtime, onEarlyText });
+
+    expect(delivered).toEqual(["確認しました。", "現在の温度は24度です。"]);
+    expect(result).toEqual({ text: fullText, deliveredEarly: true });
+  });
+
   it("awaits in-flight early delivery before exposing the fallback decision", async () => {
     const { runtime } = createAgentRuntime([], {
       blockReplyPayloads: [{ text: '{"spoken":"No duplicate."}' }],
@@ -440,7 +493,7 @@ describe("generateVoiceResponse", () => {
 
     const { result } = await runGenerateVoiceResponse([], { runtime, onEarlyText });
 
-    expect(delivered).toEqual(["First block. Second block."]);
+    expect(delivered).toEqual(["First block.", "Second block."]);
     expect(result).toEqual({
       text: "First block. Second block.",
       deliveredEarly: true,
@@ -577,7 +630,7 @@ describe("generateVoiceResponse", () => {
       onEarlyText,
     });
 
-    expect(onEarlyText).toHaveBeenCalledWith("First block. Try the fallback.");
+    expect(onEarlyText).toHaveBeenCalledWith("First block.");
     expect(result).toEqual({
       text: "First block. Try the fallback.",
       deliveredEarly: false,
@@ -1030,5 +1083,12 @@ describe("generateVoiceResponse", () => {
     const args = requireEmbeddedAgentArgs(runEmbeddedAgent);
     expect(args.agentId).toBe("voice");
     expect(args.toolsAllow).toStrictEqual([]);
+    expect(args.blockReplyChunking).toMatchObject({
+      minChars: 1,
+      breakPreference: "sentence",
+    });
+    expect(args.extraSystemPrompt).toContain(
+      "You do not have tools. Answer directly without attempting tool calls.",
+    );
   });
 });

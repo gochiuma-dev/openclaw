@@ -8,6 +8,19 @@ export function normalizePhoneNumber(input?: string): string {
   return input.replace(/\D/g, "");
 }
 
+/**
+ * Normalize the formats commonly produced by Japanese cellular gateways.
+ * chan_quectel reports domestic numbers such as 07012345678, while the
+ * configuration schema requires the equivalent E.164 form +817012345678.
+ */
+function normalizePhoneNumberForMatch(input?: string): string {
+  const digits = normalizePhoneNumber(input);
+  if (/^0(?:70|80|90)\d{8}$/.test(digits)) {
+    return `81${digits.slice(1)}`;
+  }
+  return digits;
+}
+
 /** Return true when the normalized caller exactly matches an allowlist entry. */
 export function isAllowlistedCaller(
   normalizedFrom: string,
@@ -17,7 +30,9 @@ export function isAllowlistedCaller(
     return false;
   }
   return (allowFrom ?? []).some((num) => {
-    const normalizedAllow = normalizePhoneNumber(num);
-    return normalizedAllow !== "" && normalizedAllow === normalizedFrom;
+    const normalizedAllow = normalizePhoneNumberForMatch(num);
+    return (
+      normalizedAllow !== "" && normalizedAllow === normalizePhoneNumberForMatch(normalizedFrom)
+    );
   });
 }
