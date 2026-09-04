@@ -268,7 +268,7 @@ private fun CloudflareAccessShortcut(
       onValueChange = { onStateChange(state.copy(cloudflareClientSecret = it, cloudflareRemoved = false)) },
       placeholder = cloudflareFieldPlaceholder(state, nativeString("Client Secret")),
       label = nativeString("Cloudflare Access Client Secret"),
-      masked = true,
+      secret = true,
     )
     Text(
       text =
@@ -321,7 +321,7 @@ private fun GatewayHeaderRowFields(
       placeholder =
         if (row.stored) nativeString("Saved — type to replace") else nativeString("Header value"),
       label = nativeString("Header value"),
-      masked = true,
+      secret = true,
     )
     TextButton(onClick = { onRowChange(row.copy(removed = true, value = "")) }) {
       Text(nativeString("Remove"))
