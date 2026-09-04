@@ -35,7 +35,7 @@ import { setVoiceCallStateRuntime, type VoiceCallStateRuntime } from "./runtime-
 import type { TelephonyTtsRuntime } from "./telephony-tts.js";
 import { createTelephonyTtsProvider } from "./telephony-tts.js";
 import { startTunnel, type TunnelResult } from "./tunnel.js";
-import type { CallRecord } from "./types.js";
+import type { NormalizedEvent, CallRecord } from "./types.js";
 import {
   isProviderUnreachableWebhookUrl,
   providerRequiresPublicWebhook,
@@ -222,9 +222,43 @@ async function resolveProvider(config: VoiceCallConfig): Promise<VoiceCallProvid
       const { MockProvider } = await loadMockProvider();
       return new MockProvider();
     }
+    case "sip": {
+      // Asterisk が SIP を終端し、AudioSocket で音声だけ渡してくる。
+      // イベントの送り先は webhook サーバができてから差し込む（下の配線を参照）。
+      const { SipProvider } = await import("./providers/sip.js");
+      return new SipProvider({
+        bind: config.sip.bind,
+        port: config.sip.port,
+        relayUrl: config.sip.relayUrl,
+        relayUser: config.sip.relayUser,
+        relayPassword: config.sip.relayPassword,
+        silenceMs: config.sip.silenceMs,
+        silenceRms: config.sip.silenceRms,
+        minSpeechMs: config.sip.minSpeechMs,
+        maxUtteranceMs: config.sip.maxUtteranceMs,
+        onEvent: () => {
+          // 差し替えられるまでの取りこぼしを防ぐ。start() は配線後に呼ぶ。
+        },
+      });
+    }
     default:
       throw new Error(`Unsupported voice-call provider: ${String(config.provider)}`);
   }
+}
+
+/** SIP だけが socket 駆動で、生成後の配線を要する。 */
+function isSipProvider(provider: unknown): provider is {
+  setEventSink: (sink: (event: NormalizedEvent) => void) => void;
+  setLogger: (logger: { info: (m: string) => void; warn: (m: string) => void }) => void;
+  start: () => Promise<void>;
+  stop: () => Promise<void>;
+} {
+  return (
+    typeof provider === "object" &&
+    provider !== null &&
+    (provider as { name?: unknown }).name === "sip" &&
+    typeof (provider as { setEventSink?: unknown }).setEventSink === "function"
+  );
 }
 
 function listRealtimeAgentIds(config: VoiceCallConfig, coreConfig: OpenClawConfig): string[] {
@@ -340,6 +374,17 @@ export async function createVoiceCallRuntime(params: {
     agentRuntime,
     log,
   );
+  // AudioSocket は webhook を持たない。イベントの送り先をここで結び、
+  // 結び終えてから待ち受けを始める（先に始めると初回の呼を取りこぼす）。
+  if (isSipProvider(provider)) {
+    provider.setEventSink((event) => webhookServer.ingestEvents([event]));
+    provider.setLogger({
+      info: (message: string) => log.info(message),
+      warn: (message: string) => log.warn(message),
+    });
+    await provider.start();
+  }
+
   if (realtimeVoiceRuntime) {
     const { RealtimeCallHandler } = await loadRealtimeHandler();
     const resolveRealtimeInstructions = await createRealtimeInstructionsResolver({

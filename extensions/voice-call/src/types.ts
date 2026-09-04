@@ -6,7 +6,8 @@ import type { CallMode } from "./config.js";
 // Provider Identifiers
 // -----------------------------------------------------------------------------
 
-const ProviderNameSchema = z.enum(["telnyx", "twilio", "plivo", "mock"]);
+// "sip" は Asterisk 経由。他はクラウド電話。
+const ProviderNameSchema = z.enum(["telnyx", "twilio", "plivo", "mock", "sip"]);
 export type ProviderName = z.infer<typeof ProviderNameSchema>;
 
 // -----------------------------------------------------------------------------
