@@ -1107,8 +1107,21 @@ export class VoiceCallWebhookServer {
         return false;
       }
       this.logger.info(`AI response queued ${callId} chars=${text.length}`);
-      const result = await this.manager.speak(callId, text, { listenAfterPlayback: true });
-      return result.success;
+      // manager.speak() resolves after playback. Do not await it here: the
+      // SIP provider starts TTS synthesis immediately and serializes only the
+      // actual audio playback, allowing the next sentence to synthesize while
+      // this one is being streamed.
+      void this.manager
+        .speak(callId, text, { listenAfterPlayback: true })
+        .then((result) => {
+          if (!result.success) {
+            this.logger.warn(`AI response playback failed ${callId}: ${result.error ?? "unknown"}`);
+          }
+        })
+        .catch((error: unknown) => {
+          this.logger.warn(`AI response playback failed ${callId}: ${String(error)}`);
+        });
+      return true;
     };
     try {
       const { generateVoiceResponse } = await loadResponseGeneratorModule();

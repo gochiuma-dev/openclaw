@@ -40,8 +40,10 @@ function findSafeSentenceBreakIndex(
   minChars: number,
   offset = 0,
 ): number {
-  const matches = text.matchAll(/[.!?](?=\s|$)/g);
-  let sentenceIdx = -1;
+  // Include Japanese sentence-ending punctuation. Japanese does not require
+  // whitespace after 。！？, so the ASCII whitespace lookahead must remain
+  // specific to the Latin punctuation cases.
+  const matches = text.matchAll(/(?:[.!?](?=\s|$)|[。！？])/g);
   for (const match of matches) {
     const at = match.index ?? -1;
     if (at < minChars) {
@@ -49,10 +51,13 @@ function findSafeSentenceBreakIndex(
     }
     const candidate = at + 1;
     if (isSafeFenceBreak(fenceSpans, offset + candidate)) {
-      sentenceIdx = candidate;
+      // For voice delivery, the earliest complete sentence is the useful
+      // boundary: waiting for the last sentence in the current delta defeats
+      // sentence-level pre-synthesis.
+      return candidate;
     }
   }
-  return sentenceIdx >= minChars ? sentenceIdx : -1;
+  return -1;
 }
 
 function findSafeParagraphBreakIndex(params: {
