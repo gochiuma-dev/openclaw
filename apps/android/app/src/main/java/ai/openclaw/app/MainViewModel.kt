@@ -748,8 +748,7 @@ class MainViewModel private constructor(
    * Names of the edge-proxy headers stored for one gateway. Only the names cross into the UI:
    * the values are credentials, and the editor is built so it never needs to read one back.
    */
-  internal suspend fun gatewayCustomHeaderNames(stableId: String): List<String> =
-    withContext(Dispatchers.IO) { prefs.loadGatewayCustomHeaders(stableId).keys.toList() }
+  internal suspend fun gatewayCustomHeaderNames(stableId: String): List<String> = withContext(Dispatchers.IO) { prefs.loadGatewayCustomHeaders(stableId).keys.toList() }
 
   /** Clears setup credentials without starting the runtime just to discard first-run pairing auth. */
   private suspend fun resetGatewaySetupAuth(stableId: String): Boolean {
