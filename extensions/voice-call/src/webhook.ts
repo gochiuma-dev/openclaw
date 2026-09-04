@@ -1009,6 +1009,18 @@ export class VoiceCallWebhookServer {
     }
   }
 
+  /**
+   * Push provider events that never arrive over HTTP.
+   *
+   * Cloud telephony providers post webhooks, so the parsed-event path is the
+   * only ingress they need. The SIP provider owns a socket instead: Asterisk
+   * hands it media directly, and there is no request to parse. Without this
+   * entry point a socket-driven provider cannot reach the manager at all.
+   */
+  ingestEvents(events: NormalizedEvent[]): void {
+    this.processParsedEvents(events);
+  }
+
   private processParsedEvents(events: NormalizedEvent[]): boolean {
     let replayable = false;
     for (const event of events) {

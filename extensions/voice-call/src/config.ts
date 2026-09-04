@@ -388,7 +388,7 @@ export const VoiceCallConfigSchema = z
     enabled: z.boolean().default(false),
 
     /** Active provider (telnyx, twilio, plivo, or mock) */
-    provider: z.enum(["telnyx", "twilio", "plivo", "mock"]).optional(),
+    provider: z.enum(["telnyx", "twilio", "plivo", "mock", "sip"]).optional(),
 
     /** Telnyx-specific configuration */
     telnyx: TelnyxConfigSchema.optional(),
@@ -459,6 +459,31 @@ export const VoiceCallConfigSchema = z
 
     /** Realtime voice-to-voice configuration */
     realtime: VoiceCallRealtimeConfigSchema,
+
+    /**
+     * SIP（Asterisk 経由）の設定。
+     *
+     * Asterisk が SIP・RTP・コーデックを終端し、AudioSocket で音声だけを渡してくる。
+     * こちらは待ち受けるポートと、書き起こし/音声化を担う中継の場所を知っていればよい。
+     */
+    sip: z
+      .object({
+        /** AudioSocket を待ち受ける先。Asterisk から届く必要がある */
+        bind: z.string().default("0.0.0.0"),
+        port: z.number().int().min(1).max(65535).default(9092),
+        /** voisona-relay。/stt と /wav の両方を持つ */
+        relayUrl: z.string().url().default("http://mac-mini:32767"),
+        relayUser: z.string().default(""),
+        relayPassword: z.string().default(""),
+        /** 話し終わりと見なす無音の長さ。短いと語間で切れ、長いと応答が遅れる */
+        silenceMs: z.number().int().min(200).max(5000).default(800),
+        /** これより静かな 20ms は無音として扱う */
+        silenceRms: z.number().int().min(1).max(20000).default(500),
+        /** これ未満は物音として捨てる */
+        minSpeechMs: z.number().int().min(0).max(5000).default(300),
+        maxUtteranceMs: z.number().int().min(1000).max(120000).default(20000),
+      })
+      .default({}),
 
     /** Session memory scope for voice conversations. */
     sessionScope: VoiceCallSessionScopeSchema.default("per-phone"),
