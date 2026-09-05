@@ -209,6 +209,19 @@ function requireFirstMockCall(calls: readonly unknown[][], label: string): unkno
   return call;
 }
 
+function createTestCoreConfig(): OpenClawConfig {
+  const model = "together/Qwen/Qwen2.5-7B-Instruct-Turbo";
+  return {
+    agents: {
+      defaults: { model: { primary: model } },
+      entries: {
+        main: { model: { primary: model } },
+        voice: { model: { primary: "claude-cli/claude-sonnet-5" } },
+      },
+    },
+  } as OpenClawConfig;
+}
+
 async function runGenerateVoiceResponse(
   payloads: Array<Record<string, unknown>>,
   overrides?: {
@@ -222,7 +235,7 @@ async function runGenerateVoiceResponse(
   const voiceConfig = VoiceCallConfigSchema.parse({
     responseTimeoutMs: 5000,
   });
-  const coreConfig = {} as OpenClawConfig;
+  const coreConfig = createTestCoreConfig();
   const runtime = overrides?.runtime ?? createAgentRuntime(payloads).runtime;
   const userMessage = overrides?.userMessage ?? "hello there";
 
@@ -690,7 +703,7 @@ describe("generateVoiceResponse", () => {
 
     const result = await generateVoiceResponse({
       voiceConfig,
-      coreConfig: {} as OpenClawConfig,
+      coreConfig: createTestCoreConfig(),
       agentRuntime: runtime,
       callId: "call-123",
       from: "+15550001111",
@@ -740,7 +753,7 @@ describe("generateVoiceResponse", () => {
 
     const result = await generateVoiceResponse({
       voiceConfig,
-      coreConfig: {} as OpenClawConfig,
+      coreConfig: createTestCoreConfig(),
       agentRuntime: runtime,
       callId: "call-123",
       from: "+15550001111",
@@ -787,7 +800,7 @@ describe("generateVoiceResponse", () => {
 
     const result = await generateVoiceResponse({
       voiceConfig,
-      coreConfig: {} as OpenClawConfig,
+      coreConfig: createTestCoreConfig(),
       agentRuntime: runtime,
       callId: "call-123",
       sessionKey,
@@ -972,7 +985,7 @@ describe("generateVoiceResponse", () => {
     });
     expect(args.sandboxSessionKey).toBe("agent:main:voice:15550001111");
     expect(args.workspaceDir).toBe("/tmp/openclaw/workspace/main");
-    expect(args.sessionFile).toBeUndefined();
+    expect(args.sessionFile).toMatch(/\/agents\/main\/sessions\/[^/]+\.jsonl$/u);
   });
 
   it("uses the configured voice response agent workspace", async () => {
@@ -1022,7 +1035,7 @@ describe("generateVoiceResponse", () => {
     });
     expect(args.sandboxSessionKey).toBe("agent:voice:voice:15550001111");
     expect(args.workspaceDir).toBe("/tmp/openclaw/workspace/voice");
-    expect(args.sessionFile).toBeUndefined();
+    expect(args.sessionFile).toMatch(/\/agents\/voice\/sessions\/[^/]+\.jsonl$/u);
   });
 
   it("prefers the agent frozen on the call", async () => {

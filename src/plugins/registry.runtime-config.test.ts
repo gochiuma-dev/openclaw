@@ -774,6 +774,21 @@ describe("plugin registry runtime config scope", () => {
     ).resolves.toMatchObject(reservedEntry);
     await expect(ownerApi.runtime.agent.runEmbeddedAgent(runParams)).resolves.toEqual({ ok: true });
     await expect(
+      ownerApi.runtime.agent.runEmbeddedAgent({
+        ...runParams,
+        agentId: "main",
+        sessionId: ordinaryEntry.sessionId,
+        sessionKey: ordinaryKey,
+        sessionFile: "/private/tmp/ordinary-session.jsonl",
+        sessionTarget: {
+          agentId: "main",
+          sessionId: ordinaryEntry.sessionId,
+          sessionKey: ordinaryKey,
+          storePath: "/tmp/sessions.json",
+        },
+      }),
+    ).resolves.toEqual({ ok: true });
+    await expect(
       ownerApi.runtime.agent.runEmbeddedAgent(forgedCollectionRunParams),
     ).resolves.toEqual({ ok: true });
     expect(runEmbeddedAgent).toHaveBeenLastCalledWith({

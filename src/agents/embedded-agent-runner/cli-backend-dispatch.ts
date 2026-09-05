@@ -16,6 +16,7 @@ import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/sessi
 import { onAgentEventForRun } from "../../infra/agent-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolvePreparedRunAdmission } from "../admitted-run-context.js";
+import { CLAUDE_CLI_PROFILE_ID } from "../auth-profiles.js";
 import { stripOpenClawMcpToolPrefix } from "../cli-runner/tool-policy.js";
 import { normalizeToolPolicyName } from "../tool-policy.js";
 import { isToolResultError } from "../tool-result-error.js";
@@ -76,18 +77,22 @@ function resolveEmbeddedCliBackendDispatch(
 
 /**
  * Fail closed on tool policy: dispatch only runs whose embedded tool state the
- * CLI bridge can express faithfully — a non-empty named allowlist bounded by
- * the loopback grant. Deny-all (`[]`), wildcards, absent allowlists, and
- * flag-based restrictions (`disableTools`, `modelRun`) keep the embedded
- * passthrough so no closed state silently widens on the CLI surface; full
- * translation can arrive with the first caller that needs it (#57326).
+ * CLI bridge can express faithfully — a named allowlist bounded by the
+ * loopback grant. Wildcards, absent allowlists, and flag-based restrictions
+ * (`disableTools`, `modelRun`) keep the embedded passthrough. An explicitly
+ * empty allowlist is also supported for the voice bridge, whose no-tool state
+ * is closed and has no authenticated message delivery context.
  */
 function resolveDispatchableToolsAllow(params: RunEmbeddedAgentParams): string[] | undefined {
   if (params.disableTools || params.modelRun) {
     return undefined;
   }
   if (!params.toolsAllow || params.toolsAllow.length === 0) {
-    return undefined;
+    // Voice calls may explicitly configure an empty allowlist to run without
+    // tools. That closed state is safe to express on the CLI surface because
+    // the voice bridge has no authenticated message delivery context. Keep
+    // the historical fail-closed behavior for every other embedded caller.
+    return params.messageProvider === "voice" && params.toolsAllow ? [] : undefined;
   }
   const names = params.toolsAllow.map((name) => normalizeToolPolicyName(name));
   if (names.some((name) => !name || name === "*" || name.includes("*"))) {
@@ -231,6 +236,7 @@ async function runEmbeddedAgentViaCliBackend(
       media: params.media,
       provider: dispatch.provider,
       model: params.model,
+      ...(dispatch.provider === "claude-cli" ? { authProfileId: CLAUDE_CLI_PROFILE_ID } : {}),
       modelHasVision: params.modelHasVision,
       contextWindow: params.contextWindow,
       thinkLevel: params.thinkLevel,

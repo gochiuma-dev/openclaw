@@ -7,10 +7,12 @@ import type {
   CliToolUseStartDelta,
 } from "../cli-output-contracts.js";
 import type { ToolSummaryTrace } from "../embedded-agent-runner/types.js";
+import { runBestEffortCallback } from "../embedded-agent-subscribe.callback.js";
 import { sanitizeToolArgs, sanitizeToolResult } from "../embedded-agent-tool-results.js";
 import { applyPluginTextReplacements } from "../plugin-text-transforms.js";
 import { resolveCliToolTerminalReason } from "../run-termination.js";
 import type { CliToolTracking } from "./execute-tool-tracking.js";
+import { cliBackendLog } from "./log.js";
 import { stripOpenClawMcpToolPrefix } from "./tool-policy.js";
 import type { PreparedCliRunContext } from "./types.js";
 
@@ -37,6 +39,7 @@ export function createCliEventHandlers(params: {
   let signaledToolExecutionStarted = false;
   let signaledAssistantOutputStarted = false;
   let commentaryCounter = 0;
+  const pendingReplyCallbacks = new Set<Promise<void>>();
   const toolSummaryById = new Map<string, { name: string; failed: boolean }>();
   // CLI results report an outcome without repeating the request, so the terminal
   // progress event would otherwise describe the output instead of the command.
@@ -334,6 +337,14 @@ export function createCliEventHandlers(params: {
         });
       }
     }
+    if (runParams.messageProvider === "voice" && runParams.onPartialReply && text) {
+      runBestEffortCallback({
+        callback: () => runParams.onPartialReply?.({ text, delta }),
+        label: "CLI assistant partial reply",
+        log: cliBackendLog,
+        pending: pendingReplyCallbacks,
+      });
+    }
     if (emitLiveEvents) {
       emitAgentEvent({
         runId: runParams.runId,
@@ -343,6 +354,12 @@ export function createCliEventHandlers(params: {
           delta: applyPluginTextReplacements(delta, context.backendResolved.textTransforms?.output),
         },
       });
+    }
+  };
+
+  const waitForReplyCallbacks = async () => {
+    while (pendingReplyCallbacks.size > 0) {
+      await Promise.allSettled([...pendingReplyCallbacks]);
     }
   };
 
@@ -385,6 +402,7 @@ export function createCliEventHandlers(params: {
     emitCliAssistantDelta,
     emitCliThinkingDelta,
     emitCliThinkingProgress,
+    waitForReplyCallbacks,
     hasObservedCliActivity: () => observedCliActivity,
     activeParsedToolCount: () => activeParsedTools.size,
     getToolSummary,

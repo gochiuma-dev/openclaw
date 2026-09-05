@@ -5,6 +5,10 @@ import {
   parseSqliteSessionFileMarker,
   sqliteSessionFileMarkerMatchesTarget,
 } from "../config/sessions/legacy-sqlite-marker.js";
+import {
+  resolveSessionFilePathCore,
+  resolveSessionFilePathOptions,
+} from "../config/sessions/paths.js";
 import { resolveSessionEntryAccessTarget } from "../config/sessions/session-accessor.entry.js";
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -322,6 +326,27 @@ export function createPluginSessionOwnership(state: PluginRegistryState, pluginI
         }
         continue;
       }
+      const canonicalSessionFileMatches = entries.filter(({ entry }) => {
+        if (!agentId || !storePath || !entry.sessionId) {
+          return false;
+        }
+        const canonicalSessionFile = resolveSessionFilePathCore(
+          entry.sessionId,
+          entry,
+          resolveSessionFilePathOptions({ agentId, storePath }),
+        );
+        return canonicalSessionFile === sessionFile;
+      });
+      if (canonicalSessionFileMatches.length > 0) {
+        for (const match of canonicalSessionFileMatches) {
+          assertSessionEntryOwned({
+            action: params.action,
+            entry: match.entry,
+            sessionKey: match.sessionKey,
+          });
+        }
+        continue;
+      }
       const marker = parseSqliteSessionFileMarker(sessionFile);
       if (!marker) {
         throw new Error("Plugin session ownership checks require a SQLite transcript marker.");
@@ -388,6 +413,17 @@ export function createPluginSessionOwnership(state: PluginRegistryState, pluginI
     const directAgentId = normalizeOptionalString(params.agentId);
     const sessionFile = normalizeOptionalString(params.sessionFile);
     if (target) {
+      const canonicalSessionFile =
+        agentId && ownershipStorePath && entry?.sessionId
+          ? resolveSessionFilePathCore(
+              entry.sessionId,
+              entry,
+              resolveSessionFilePathOptions({
+                agentId,
+                storePath: ownershipStorePath,
+              }),
+            )
+          : undefined;
       const legacySessionIdentityMatches =
         Boolean(sessionFile) &&
         Boolean(agentId) &&
@@ -405,7 +441,10 @@ export function createPluginSessionOwnership(state: PluginRegistryState, pluginI
         targetSessionId === entry?.sessionId &&
         directSessionId === entry?.sessionId &&
         targetAgentId === directAgentId &&
-        (!sessionFile || sessionFile === sessionKey || legacySessionIdentityMatches);
+        (!sessionFile ||
+          sessionFile === sessionKey ||
+          sessionFile === canonicalSessionFile ||
+          legacySessionIdentityMatches);
       if (!targetIdentityMatches) {
         throw new Error(
           `Plugin "${pluginId}" may execute a persisted session only with its exact session target identity.`,
