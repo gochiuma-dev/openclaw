@@ -320,6 +320,7 @@ export async function createVoiceCallRuntime(params: {
   config: VoiceCallConfig;
   coreConfig: OpenClawConfig;
   fullConfig?: OpenClawConfig;
+  getCurrentConfig?: () => OpenClawConfig;
   agentRuntime: OpenClawPluginApi["runtime"]["agent"];
   stateRuntime?: VoiceCallStateRuntime["state"];
   ttsRuntime?: TelephonyTtsRuntime;
@@ -329,6 +330,7 @@ export async function createVoiceCallRuntime(params: {
     config: rawConfig,
     coreConfig,
     fullConfig,
+    getCurrentConfig,
     agentRuntime,
     stateRuntime,
     ttsRuntime,
@@ -374,6 +376,7 @@ export async function createVoiceCallRuntime(params: {
     fullConfig ?? (coreConfig as OpenClawConfig),
     agentRuntime,
     log,
+    getCurrentConfig,
   );
   // AudioSocket は webhook を持たない。イベントの送り先をここで結び、
   // 結び終えてから待ち受けを始める（先に始めると初回の呼を取りこぼす）。
