@@ -189,6 +189,7 @@ export class VoiceCallWebhookServer {
   private provider: VoiceCallProvider;
   private coreConfig: OpenClawConfig | null;
   private fullConfig: OpenClawConfig | null;
+  private getCurrentConfig: (() => OpenClawConfig) | undefined;
   private agentRuntime: OpenClawPluginApi["runtime"]["agent"] | null;
   private logger: Logger;
   private stopStaleCallReaper: (() => void) | null = null;
@@ -210,12 +211,14 @@ export class VoiceCallWebhookServer {
     fullConfig?: OpenClawConfig,
     agentRuntime?: OpenClawPluginApi["runtime"]["agent"],
     logger?: Logger,
+    getCurrentConfig?: () => OpenClawConfig,
   ) {
     this.config = normalizeVoiceCallConfig(config);
     this.manager = manager;
     this.provider = provider;
     this.coreConfig = coreConfig ?? null;
     this.fullConfig = fullConfig ?? null;
+    this.getCurrentConfig = getCurrentConfig;
     this.agentRuntime = agentRuntime ?? null;
     this.logger = logger ?? {
       info: console.log,
@@ -1131,9 +1134,10 @@ export class VoiceCallWebhookServer {
       const numberRouteKey = resolveVoiceCallNumberRouteKeyForCall(call);
       const effectiveConfig = resolveVoiceCallEffectiveConfig(this.config, numberRouteKey).config;
 
+      const currentConfig = this.getCurrentConfig?.() ?? this.coreConfig;
       const result = await generateVoiceResponse({
         voiceConfig: effectiveConfig,
-        coreConfig: this.coreConfig,
+        coreConfig: currentConfig,
         agentRuntime: this.agentRuntime,
         callId,
         sessionKey: call.sessionKey,

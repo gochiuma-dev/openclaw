@@ -2227,6 +2227,43 @@ describe("VoiceCallWebhookServer classic response routing", () => {
     });
   });
 
+  it("uses the current gateway config for voice response model selection", async () => {
+    const call = createCall(Date.now());
+    const manager = {
+      ...automaticReplyManagerStub,
+      getCall: (callId: string) => (callId === call.callId ? call : undefined),
+    } as unknown as CallManager;
+    const initialConfig = { agents: { entries: { voice: { model: { primary: "old/model" } } } } };
+    const currentConfig = {
+      agents: { entries: { voice: { model: { primary: "new/model" } } } },
+    };
+    const server = new VoiceCallWebhookServer(
+      createConfig({ agentId: "voice" }),
+      manager,
+      provider,
+      initialConfig as never,
+      undefined,
+      {} as never,
+      undefined,
+      () => currentConfig as never,
+    );
+    mocks.generateVoiceResponse.mockReset().mockResolvedValue({
+      text: null,
+      deliveredEarly: false,
+    });
+
+    await (
+      server as unknown as {
+        handleInboundResponse: (callId: string, message: string) => Promise<void>;
+      }
+    ).handleInboundResponse(call.callId, "hello");
+
+    expect(mocks.generateVoiceResponse.mock.calls[0]?.[0]).toHaveProperty(
+      "coreConfig",
+      currentConfig,
+    );
+  });
+
   it("marks inbound calls as non-owners and does not replay an early response", async () => {
     const call = createCall(Date.now());
     call.direction = "inbound";
