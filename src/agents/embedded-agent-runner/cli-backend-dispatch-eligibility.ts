@@ -20,6 +20,8 @@ type EmbeddedCliBackendDispatchEligibilityParams = {
   provider?: string;
   model?: string;
   agentId?: string;
+  /** Voice calls explicitly use the host-owned CLI subscription login. */
+  messageProvider?: string;
   /** Explicitly pinned auth profile for the run; decisive when it resolves. */
   authProfileId?: string;
   config?: OpenClawConfig;
@@ -43,21 +45,31 @@ export function resolveEmbeddedCliBackendDispatchEligibility(
     resolveRuntimeCliBackends().map((backend) => [normalizeProviderId(backend.id), backend]),
   );
   const requestedProvider = normalizeProviderId(params.provider ?? "");
-  const provider = backends.has(requestedProvider)
-    ? requestedProvider
-    : normalizeProviderId(
-        resolveCliRuntimeExecutionProvider({
-          provider: params.provider ?? "",
-          cfg: params.config,
-          agentId: params.agentId,
-          modelId: params.model,
-          // A pinned profile can be what maps a canonical ref onto its CLI
-          // runtime (e.g. multiple compatible profiles, no configured
-          // agentRuntime); omitting it here would strand the run on the
-          // passthrough before the credential-type check ever sees the pin.
-          authProfileId: params.authProfileId,
-        }) ?? "",
-      );
+  const provider =
+    params.messageProvider === "voice" && requestedProvider === "claude-cli"
+      ? requestedProvider
+      : backends.has(requestedProvider)
+        ? requestedProvider
+        : normalizeProviderId(
+            resolveCliRuntimeExecutionProvider({
+              provider: params.provider ?? "",
+              cfg: params.config,
+              agentId: params.agentId,
+              modelId: params.model,
+              // A pinned profile can be what maps a canonical ref onto its CLI
+              // runtime (e.g. multiple compatible profiles, no configured
+              // agentRuntime); omitting it here would strand the run on the
+              // passthrough before the credential-type check ever sees the pin.
+              authProfileId: params.authProfileId,
+            }) ?? "",
+          );
+  // The voice bridge deliberately selects the host-owned Claude CLI login. A
+  // native-auth marker can look like an api-key to the generic model resolver,
+  // but routing voice back to the embedded passthrough would either bill
+  // extra usage or fail before the CLI process can read its own login.
+  if (params.messageProvider === "voice" && provider === "claude-cli") {
+    return { provider };
+  }
   // The backend plugin owns the claim that its provider's direct-API
   // passthrough cannot run on subscription credentials. Providers whose
   // registered backend does not declare it — and config-only backends with

@@ -12,6 +12,23 @@ const agentRuntime = {
 } as unknown as OpenClawPluginApi["runtime"]["agent"];
 
 describe("resolveVoiceResponseModel", () => {
+  it("uses the selected agent default model when provided", () => {
+    expect(
+      resolveVoiceResponseModel({
+        voiceConfig: VoiceCallConfigSchema.parse({}),
+        agentRuntime,
+        agentModel: {
+          provider: "claude-cli",
+          model: "claude-sonnet-5",
+        },
+      }),
+    ).toEqual({
+      modelRef: "claude-cli/claude-sonnet-5",
+      provider: "claude-cli",
+      model: "claude-sonnet-5",
+    });
+  });
+
   it("falls back to the runtime default model", () => {
     expect(
       resolveVoiceResponseModel({

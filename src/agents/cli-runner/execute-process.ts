@@ -353,6 +353,7 @@ export async function executeCliProcess(params: {
   }
   params.options?.onPhase?.("resolve");
   streamingParser?.finish();
+  await params.events.waitForReplyCallbacks();
   const streamingParserErrorText =
     params.outputMode === "jsonl" ? (streamingParser?.getErrorText() ?? null) : null;
   if (streamingParserErrorText) {

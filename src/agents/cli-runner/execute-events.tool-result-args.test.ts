@@ -124,6 +124,32 @@ describe("cli tool result events", () => {
     }
   });
 
+  it("forwards streamed assistant snapshots to the voice partial-reply callback", async () => {
+    const runId = "run-voice-partial-reply";
+    const onPartialReply = vi.fn(async () => undefined);
+    const context = buildContext(runId);
+    context.params.messageProvider = "voice";
+    context.params.onPartialReply = onPartialReply;
+    const handlers = createCliEventHandlers({
+      context,
+      toolTracking: buildToolTracking(),
+      getRunState: () => ({ failed: false, error: undefined }),
+    });
+
+    handlers.emitCliAssistantDelta({ text: "最初の文。", delta: "最初の文。" });
+    handlers.emitCliAssistantDelta({ text: "最初の文。次の文。", delta: "次の文。" });
+    await handlers.waitForReplyCallbacks();
+
+    expect(onPartialReply).toHaveBeenNthCalledWith(1, {
+      text: "最初の文。",
+      delta: "最初の文。",
+    });
+    expect(onPartialReply).toHaveBeenNthCalledWith(2, {
+      text: "最初の文。次の文。",
+      delta: "次の文。",
+    });
+  });
+
   it("keeps correlated result args without adding them to display results", () => {
     const runId = "run-tool-result-args";
     const handlers = createCliEventHandlers({

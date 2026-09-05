@@ -1,3 +1,4 @@
+import { resolveDefaultModelForAgent } from "openclaw/plugin-sdk/agent-runtime";
 // Voice Call plugin module implements runtime behavior.
 import { listAgentIds } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
@@ -463,9 +464,11 @@ export async function createVoiceCallRuntime(params: {
             assertRealtimeVoiceAgentConsultModelSelectionUnlocked(modelLockParams);
             return fastContext.result;
           }
+          const configuredModel = resolveDefaultModelForAgent({ cfg, agentId });
           const { provider: agentProvider, model } = resolveVoiceResponseModel({
             voiceConfig: effectiveConfig,
             agentRuntime,
+            agentModel: configuredModel,
           });
           const thinkLevel =
             effectiveConfig.realtime.consultThinkingLevel ??
