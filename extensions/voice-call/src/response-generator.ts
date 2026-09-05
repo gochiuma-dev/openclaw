@@ -12,7 +12,10 @@ import {
   ModelSelectionLockedError,
   resolvePersistedSessionRuntimeId,
 } from "openclaw/plugin-sdk/model-session-runtime";
-import { isValidAgentHarnessSessionStoreEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import {
+  isValidAgentHarnessSessionStoreEntry,
+  resolveSessionFilePath,
+} from "openclaw/plugin-sdk/session-store-runtime";
 import {
   isRecord,
   filterStringEntries,
@@ -414,9 +417,13 @@ export async function generateVoiceResponse(
           sessionKey: resolvedSessionKey,
         });
 
-        // Resolve model from config
-        const { provider, model } = resolveVoiceResponseModel({ voiceConfig, agentRuntime });
         const configuredModel = resolveDefaultModelForAgent({ cfg, agentId });
+        // Resolve explicit voice-call overrides first; otherwise use the selected voice agent.
+        const { provider, model } = resolveVoiceResponseModel({
+          voiceConfig,
+          agentRuntime,
+          agentModel: configuredModel,
+        });
 
         let sessionEntry = existingSessionEntry;
         if (sessionEntry?.modelSelectionLocked === true && voiceConfig.responseModel) {
@@ -465,6 +472,7 @@ export async function generateVoiceResponse(
           };
         }
         const sessionId = sessionEntry.sessionId;
+        const sessionFile = resolveSessionFilePath(sessionId, sessionEntry, { agentId });
         const modelSelectionLocked = sessionEntry.modelSelectionLocked === true;
         // Native delegation requires an explicit pin; the host inherits ordinary runtime requests.
         const pinnedHarnessId = isValidAgentHarnessSessionStoreEntry(
@@ -496,9 +504,15 @@ export async function generateVoiceResponse(
         const timeoutMs =
           voiceConfig.responseTimeoutMs ?? agentRuntime.resolveAgentTimeoutMs({ cfg });
         const runId = `voice:${callId}:${Date.now()}`;
+        const streamStartedAt = Date.now();
 
         const blockReplyPayloads: VoiceResponsePayload[] = [];
         const earlyTextSegments: string[] = [];
+        let partialCount = 0;
+        let blockReplyCount = 0;
+        let firstPartialAtMs: number | undefined;
+        let firstPartialSentenceAtMs: number | undefined;
+        let firstEarlyDeliverySource: "partial" | "block" | "flush" | undefined;
         let latestToolBoundaryMessageIndex: number | undefined;
         let blockReplyBoundariesReliable = true;
         let earlyDeliveryFailed = false;
@@ -540,8 +554,12 @@ export async function generateVoiceResponse(
           lane: "voice",
           extraSystemPrompt,
           agentDir,
+          sessionFile,
           senderIsOwner,
           toolsAllow,
+          ...(provider === "claude-cli"
+            ? { cliBackendDispatch: "subscription-auth" as const }
+            : {}),
           abortSignal,
           blockReplyBreak: "text_end",
           blockReplyChunking: {
@@ -553,15 +571,30 @@ export async function generateVoiceResponse(
             breakPreference: "sentence",
           },
           onPartialReply: async (payload) => {
-            if (!onEarlyText || earlyDeliveryFailed) {
+            const partialAtMs = Date.now() - streamStartedAt;
+            partialCount += 1;
+            firstPartialAtMs ??= partialAtMs;
+            const rawText = payload.text?.trim() ?? "";
+            if (!rawText) {
+              console.log(
+                `[voice-call/stream] partial callId=${callId} seq=${partialCount} rawChars=0 accepted=false reason=empty elapsedMs=${partialAtMs}`,
+              );
               return;
             }
-            const rawText = payload.text?.trim() ?? "";
-            if (!rawText || rawText.startsWith("{") || rawText.includes('"spoken"')) {
+            if (rawText.startsWith("{") || rawText.includes('"spoken"')) {
+              console.log(
+                `[voice-call/stream] partial callId=${callId} seq=${partialCount} rawChars=${rawText.length} accepted=false reason=structured elapsedMs=${partialAtMs}`,
+              );
+              return;
+            }
+            if (!onEarlyText || earlyDeliveryFailed) {
               return;
             }
             const text = sanitizePlainSpokenText(rawText);
             if (!text) {
+              console.log(
+                `[voice-call/stream] partial callId=${callId} seq=${partialCount} rawChars=${rawText.length} accepted=false reason=empty-after-sanitize elapsedMs=${partialAtMs}`,
+              );
               return;
             }
             if (partialStreamText && !text.startsWith(partialStreamText)) {
@@ -574,6 +607,15 @@ export async function generateVoiceResponse(
               partialStreamText = text;
             }
             const complete = splitCompleteSpokenSentences(partialStreamText);
+            console.log(
+              `[voice-call/stream] partial callId=${callId} seq=${partialCount} rawChars=${rawText.length} cumulativeChars=${partialStreamText.length} completeChars=${complete.consumedLength} completeSentences=${complete.sentences.length} elapsedMs=${partialAtMs}`,
+            );
+            if (complete.consumedLength > 0 && firstPartialSentenceAtMs === undefined) {
+              firstPartialSentenceAtMs = partialAtMs;
+              console.log(
+                `[voice-call/stream] sentence-boundary callId=${callId} source=partial completeChars=${complete.consumedLength} sentences=${complete.sentences.length} elapsedMs=${partialAtMs}`,
+              );
+            }
             if (complete.consumedLength <= partialDeliveredLength) {
               return;
             }
@@ -583,6 +625,7 @@ export async function generateVoiceResponse(
             );
             partialDeliveredLength = complete.consumedLength;
             earlyDeliveryStarted = true;
+            firstEarlyDeliverySource ??= "partial";
             const deliver = async () => {
               if (earlyDeliveryFailed) {
                 return;
@@ -608,6 +651,10 @@ export async function generateVoiceResponse(
               }
             }
             blockReplyPayloads.push(payload);
+            blockReplyCount += 1;
+            console.log(
+              `[voice-call/stream] block callId=${callId} seq=${blockReplyCount} rawChars=${payload.text?.length ?? 0} elapsedMs=${Date.now() - streamStartedAt}`,
+            );
             if (!onEarlyText || earlyDeliveryFailed || earlyDeliveryStarted) {
               return;
             }
@@ -625,6 +672,7 @@ export async function generateVoiceResponse(
             // produce a pre-tool block, the existing tool-boundary filtering
             // still prevents deferred blocks from being spoken after a tool.
             earlyDeliveryStarted = true;
+            firstEarlyDeliverySource ??= "block";
             const deliver = async () => {
               if (earlyDeliveryFailed) {
                 return;
@@ -674,6 +722,7 @@ export async function generateVoiceResponse(
               return;
             }
             lastFlushedText = text;
+            firstEarlyDeliverySource ??= "flush";
             const delivery = await deliverEarlySentences(onEarlyText, text);
             earlyTextSegments.push(...delivery.segments);
           },
@@ -683,6 +732,10 @@ export async function generateVoiceResponse(
           extractSpokenTextFromPayloads((result.payloads ?? []) as VoiceResponsePayload[]) ??
           lastFlushedText ??
           extractSpokenTextFromPayloads(blockReplyPayloads);
+
+        console.log(
+          `[voice-call/stream] summary callId=${callId} provider=${provider} model=${model} partials=${partialCount} blocks=${blockReplyCount} firstPartialMs=${firstPartialAtMs ?? -1} firstPartialSentenceMs=${firstPartialSentenceAtMs ?? -1} earlySource=${firstEarlyDeliverySource ?? "none"} earlySegments=${earlyTextSegments.length} totalElapsedMs=${Date.now() - streamStartedAt}`,
+        );
 
         const earlyText = earlyTextSegments.join(" ").trim();
         let text = completeText;

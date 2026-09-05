@@ -140,11 +140,31 @@ describe("resolveEmbeddedCliBackendDispatchEligibility", () => {
     ).toBeUndefined();
   });
 
+  it("forces voice calls through the host-owned Claude CLI login", () => {
+    resolveModelAuthMode.mockReturnValue("api-key");
+    expect(
+      resolveEmbeddedCliBackendDispatchEligibility({
+        provider: "claude-cli",
+        messageProvider: "voice",
+      }),
+    ).toEqual({ provider: "claude-cli" });
+  });
+
   it("returns undefined without a registered claude-cli backend", () => {
     resolveRuntimeCliBackends.mockReturnValue([]);
     expect(
       resolveEmbeddedCliBackendDispatchEligibility({ provider: "claude-cli" }),
     ).toBeUndefined();
+  });
+
+  it("keeps voice calls on Claude CLI when the active backend registry is incomplete", () => {
+    resolveRuntimeCliBackends.mockReturnValue([]);
+    expect(
+      resolveEmbeddedCliBackendDispatchEligibility({
+        provider: "claude-cli",
+        messageProvider: "voice",
+      }),
+    ).toEqual({ provider: "claude-cli" });
   });
 
   it("honors an explicitly pinned API-key profile over subscription-first order", () => {
@@ -467,9 +487,8 @@ describe("runEmbeddedAgentViaCliBackendIfEligible execution", () => {
     },
   );
 
-  // Fail-closed tool policy: only a non-empty named allowlist is expressible
-  // on the CLI surface. Every other embedded tool state keeps the passthrough
-  // so no closed state silently widens.
+  // Fail-closed tool policy: only a named allowlist is expressible on the CLI
+  // surface. The voice-specific empty-list case is tested separately below.
   it.each([
     ["a wildcard allowlist", { toolsAllow: ["*"] }],
     ["a mixed wildcard allowlist", { toolsAllow: ["memory_search", "*"] }],
@@ -484,6 +503,22 @@ describe("runEmbeddedAgentViaCliBackendIfEligible execution", () => {
       ),
     ).toBeUndefined();
     expect(runCliAgent).not.toHaveBeenCalled();
+  });
+
+  it("dispatches a voice run with an explicitly empty tool allowlist", async () => {
+    expect(
+      await runEmbeddedAgentViaCliBackendIfEligible(
+        baseRunParams({
+          messageProvider: "voice",
+          toolsAllow: [],
+        }),
+      ),
+    ).toBeDefined();
+    expect(runCliAgent).toHaveBeenCalledTimes(1);
+    expect(runCliAgent.mock.calls[0]?.[0]).toMatchObject({
+      provider: "claude-cli",
+      cliToolAvailability: { native: [], openClaw: [] },
+    });
   });
 
   it("invokes onExecutionStarted once at the dispatch boundary", async () => {
