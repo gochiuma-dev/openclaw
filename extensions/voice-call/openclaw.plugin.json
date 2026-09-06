@@ -370,6 +370,43 @@
           },
           "maxUtteranceMs": {
             "type": "integer"
+          },
+          "ari": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "baseUrl",
+              "username",
+              "password"
+            ],
+            "properties": {
+              "baseUrl": {
+                "type": "string"
+              },
+              "username": {
+                "type": "string"
+              },
+              "password": {
+                "type": "string"
+              },
+              "endpoint": {
+                "type": "string"
+              },
+              "context": {
+                "type": "string"
+              },
+              "extension": {
+                "type": "string"
+              },
+              "timeoutSeconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 120
+              },
+              "callerId": {
+                "type": "string"
+              }
+            }
           }
         }
       },
