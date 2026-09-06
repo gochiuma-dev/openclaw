@@ -482,6 +482,28 @@ export const VoiceCallConfigSchema = z
         /** これ未満は物音として捨てる */
         minSpeechMs: z.number().int().min(0).max(5000).default(300),
         maxUtteranceMs: z.number().int().min(1000).max(120000).default(20000),
+        /**
+         * 発信に使う Asterisk の ARI。省略すると発信できない（受信は動く）。
+         *
+         * AudioSocket は UUID しか運ばないので、発信側も同じ UUID を originate の
+         * 変数で渡し、応答したチャネルを受信と同じ待ち受けへ流す。媒体経路は一本。
+         */
+        ari: z
+          .object({
+            baseUrl: z.string().url(),
+            username: z.string().min(1),
+            password: z.string().min(1),
+            /** 発信チャネル。{number} を宛先で置換する */
+            endpoint: z.string().min(1).default("Quectel/quectel0/{number}"),
+            /** 応答後の着地点 */
+            context: z.string().min(1).default("openclaw-outbound"),
+            extension: z.string().min(1).default("701"),
+            /** 相手が出るまで待つ秒数 */
+            timeoutSeconds: z.number().int().min(5).max(120).default(45),
+            /** 発信者番号。省略すると Asterisk 既定 */
+            callerId: z.string().optional(),
+          })
+          .optional(),
       })
       .default({}),
 

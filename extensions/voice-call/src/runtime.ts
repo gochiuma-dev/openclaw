@@ -237,6 +237,7 @@ async function resolveProvider(config: VoiceCallConfig): Promise<VoiceCallProvid
         silenceRms: config.sip.silenceRms,
         minSpeechMs: config.sip.minSpeechMs,
         maxUtteranceMs: config.sip.maxUtteranceMs,
+        ...(config.sip.ari ? { ari: config.sip.ari } : {}),
         onEvent: () => {
           // 差し替えられるまでの取りこぼしを防ぐ。start() は配線後に呼ぶ。
         },
