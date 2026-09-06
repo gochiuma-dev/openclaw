@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, assert, describe, expect, it } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildFullReleaseCandidateBinding,
   buildFullReleaseCandidateRequest,
@@ -45,6 +45,7 @@ import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 const SCRIPT = resolve("scripts/full-release-validation-state.mjs");
 const SHA = "a".repeat(40);
 const TARGET_SHA = "b".repeat(40);
+const CHILD_RUN_REPOSITORY = "openclaw/openclaw";
 const TRUSTED_MAIN = { fullRef: "refs/heads/main", ref: "main", sha: SHA };
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -1101,6 +1102,16 @@ describe("release child attempt composition", () => {
 });
 
 describe("release decision policy", () => {
+  // readChild validates child provenance against the ambient GITHUB_REPOSITORY, so the
+  // mocked run payloads below only match while it is pinned to the fixture repository.
+  // Without the pin these tests read the host repository and fail on forks.
+  beforeEach(() => {
+    vi.stubEnv("GITHUB_REPOSITORY", CHILD_RUN_REPOSITORY);
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it.each(["beta", "stable", "full"])(
     "records Windows/macOS failures without blocking %s publication",
     (releaseProfile) => {
@@ -1317,7 +1328,7 @@ describe("release decision policy", () => {
           html_url: original.url,
           id: 101,
           path: ".github/workflows/ci.yml@refs/heads/release-ci/tooling",
-          repository: { full_name: "openclaw/openclaw" },
+          repository: { full_name: CHILD_RUN_REPOSITORY },
           run_attempt: 2,
           status: "completed",
           triggering_actor: { login: "release-operator" },
@@ -1376,7 +1387,7 @@ describe("release decision policy", () => {
         html_url: planned.url,
         id: 101,
         path: ".github/workflows/ci.yml",
-        repository: { full_name: "openclaw/openclaw" },
+        repository: { full_name: CHILD_RUN_REPOSITORY },
         run_attempt: 1,
         status: "completed",
         triggering_actor: { login: "github-actions[bot]" },
@@ -1495,7 +1506,7 @@ describe("release decision policy", () => {
           head_sha: "c".repeat(40),
           id: 101,
           path: ".github/workflows/ci.yml",
-          repository: { full_name: "openclaw/openclaw" },
+          repository: { full_name: CHILD_RUN_REPOSITORY },
           run_attempt: 1,
           status: "completed",
           triggering_actor: { login: "github-actions[bot]" },
@@ -1566,7 +1577,7 @@ describe("release decision policy", () => {
         head_sha: planned.workflowSha,
         id: 101,
         path: ".github/workflows/ci.yml",
-        repository: { full_name: "openclaw/openclaw" },
+        repository: { full_name: CHILD_RUN_REPOSITORY },
         run_attempt: 2,
         status: "in_progress",
         triggering_actor: { login: "github-actions[bot]" },
@@ -1598,7 +1609,7 @@ describe("release decision policy", () => {
             head_sha: planned.workflowSha,
             id: 101,
             path: ".github/workflows/ci.yml",
-            repository: { full_name: "openclaw/openclaw" },
+            repository: { full_name: CHILD_RUN_REPOSITORY },
             run_attempt: 1,
             status: "in_progress",
             triggering_actor: { login: "github-actions[bot]" },
