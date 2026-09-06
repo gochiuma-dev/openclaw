@@ -59,6 +59,17 @@ export type SipProviderOptions = {
   /** Utterances shorter than this are noise, not speech. */
   minSpeechMs: number;
   maxUtteranceMs: number;
+  /** Asterisk ARI. Absent means inbound-only; initiateCall then fails loudly. */
+  ari?: {
+    baseUrl: string;
+    username: string;
+    password: string;
+    endpoint: string;
+    context: string;
+    extension: string;
+    timeoutSeconds: number;
+    callerId?: string;
+  };
   /** Pushes provider events into the manager. Replaceable after construction. */
   onEvent: (event: NormalizedEvent) => void;
   logger?: { info: (m: string) => void; warn: (m: string) => void };
@@ -84,6 +95,22 @@ type CallState = {
   /** TTS synthesis may run ahead of playback, but audio must remain FIFO. */
   ttsTail: Promise<void>;
 };
+
+/**
+ * Reduce a dialable number to the domestic form the LTE dialplan matches.
+ *
+ * The dialplan routes `_0X.` over the SIM and `_+X.` through the international
+ * prefix. Passing E.164 through would silently take the expensive route, so
+ * +81 is folded to a leading zero here and anything else is refused.
+ */
+function normalizeDomesticNumber(raw: string): string | null {
+  const digits = raw.trim().replace(/[\s()-]/g, "");
+  if (/^0\d{8,}$/.test(digits)) {
+    return digits;
+  }
+  const jp = /^\+81(\d{8,})$/.exec(digits);
+  return jp ? `0${jp[1]}` : null;
+}
 
 /** Pending metadata the dialplan posts before AudioSocket connects. */
 type PendingCall = { from?: string; to?: string; at: number };
@@ -191,10 +218,63 @@ export class SipProvider implements VoiceCallProvider {
 
   // ----------------------------------------------------------------- provider
 
-  async initiateCall(_input: InitiateCallInput): Promise<InitiateCallResult> {
-    // Outbound needs Asterisk to originate the channel (AMI/ARI); inbound is
-    // the only direction wired today. Failing loudly beats a silent no-op.
-    throw new Error("SIP provider does not place outbound calls yet");
+  /**
+   * Outbound. Asterisk originates the leg; this provider still owns the media.
+   *
+   * AudioSocket carries only a UUID, so the UUID is minted here and handed to
+   * Asterisk as a channel variable. The dialplan lands the answered channel on
+   * the same AudioSocket listener the inbound path uses, which keeps one media
+   * path for both directions.
+   *
+   * The number is normalized to the domestic form because the dialplan's LTE
+   * route matches `_0X.`; an E.164 string would fall through to the
+   * international prefix and bill accordingly.
+   */
+  async initiateCall(input: InitiateCallInput): Promise<InitiateCallResult> {
+    const ari = this.opts.ari;
+    if (!ari) {
+      throw new Error("SIP provider needs sip.ari configured to place outbound calls");
+    }
+    const uuid = crypto.randomUUID();
+    const number = normalizeDomesticNumber(input.to);
+    if (!number) {
+      throw new Error(`SIP provider cannot dial ${input.to}`);
+    }
+
+    // Register before originating: the channel can reach AudioSocket before
+    // the HTTP response is read, and an unknown UUID is dropped.
+    this.prunePending();
+    this.pending.set(uuid, { from: input.from, to: input.to, at: Date.now() });
+
+    const body = {
+      endpoint: ari.endpoint.replace("{number}", number),
+      context: ari.context,
+      extension: ari.extension,
+      priority: 1,
+      timeout: ari.timeoutSeconds,
+      ...(ari.callerId ? { callerId: ari.callerId } : {}),
+      variables: { AUDIOSOCKET_ID: uuid },
+    };
+    const auth = Buffer.from(`${ari.username}:${ari.password}`).toString("base64");
+    let res: Response;
+    try {
+      res = await fetch(`${ari.baseUrl.replace(/\/+$/, "")}/channels`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Basic ${auth}` },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(20_000),
+      });
+    } catch (err) {
+      this.pending.delete(uuid);
+      throw new Error(`ARI originate failed: ${String(err)}`);
+    }
+    if (!res.ok) {
+      this.pending.delete(uuid);
+      const detail = await res.text().catch(() => "");
+      throw new Error(`ARI originate rejected (${res.status}): ${detail.slice(0, 200)}`);
+    }
+    this.log(`outbound originate ${number} uuid=${uuid}`);
+    return { providerCallId: uuid, status: "initiated" };
   }
 
   async hangupCall(input: HangupCallInput): Promise<void> {
