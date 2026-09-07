@@ -48,10 +48,10 @@ const LEGACY_UPDATE_NODE_RUNNER_COMPAT_CHUNK = [
 ].join("\n");
 
 const ROOT = resolveRepoRoot(import.meta.url);
-const ROOT_RUNTIME_ALIAS_PATTERN = /^(?<base>.+\.(?:runtime|contract))-[A-Za-z0-9_-]+\.js$/u;
+const ROOT_RUNTIME_ALIAS_PATTERN = /^(?<base>.+\.(?:runtime|contract))-[A-Za-z0-9_-]+\.m?js$/u;
 const ROOT_STABLE_RUNTIME_ALIAS_PATTERN = /^.+\.(?:runtime|contract)\.js$/u;
 const ROOT_RUNTIME_IMPORT_SPECIFIER_PATTERN =
-  /(["'])\.\/([^"']+\.(?:runtime|contract)-[A-Za-z0-9_-]+\.js)\1/gu;
+  /(["'])\.\/([^"']+\.(?:runtime|contract)-[A-Za-z0-9_-]+\.m?js)\1/gu;
 const OFFICIAL_CHANNEL_CATALOG_OUTPUT = "dist/channel-catalog.json";
 const EXPORT_HTML_SOURCE_DIR = "src/auto-reply/reply/export-html";
 const EXPORT_HTML_OUTPUT_DIR = "dist/export-html";
@@ -214,7 +214,7 @@ function collectStableRootRuntimeAliasCandidates(distDir: string, fsImpl: typeof
   try {
     entries = fsImpl.readdirSync(distDir, { withFileTypes: true });
   } catch {
-    return new Map();
+    return { entries: [], candidatesByAlias: new Map<string, string[]>() };
   }
 
   const candidatesByAlias = new Map<string, string[]>();
@@ -231,7 +231,8 @@ function collectStableRootRuntimeAliasCandidates(distDir: string, fsImpl: typeof
     candidates.push(entry.name);
     candidatesByAlias.set(aliasFileName, candidates);
   }
-  return candidatesByAlias;
+  // Importer rewrites retain directory order; only alias candidates are sorted.
+  return { entries, candidatesByAlias };
 }
 
 function resolveStableRootRuntimeAliasCandidate(
@@ -287,7 +288,7 @@ function listStableRootRuntimeAliasOutputs(params: RuntimeFsParams = {}) {
   const rootDir = params.rootDir ?? ROOT;
   const distDir = path.join(rootDir, "dist");
   const fsImpl = params.fs ?? fs;
-  return [...collectStableRootRuntimeAliasCandidates(distDir, fsImpl)]
+  return [...collectStableRootRuntimeAliasCandidates(distDir, fsImpl).candidatesByAlias]
     .filter(([aliasFileName, candidates]) =>
       resolveStableRootRuntimeAliasCandidate(aliasFileName, candidates, distDir, fsImpl),
     )
@@ -470,7 +471,7 @@ export function writeStableRootRuntimeAliases(params: RuntimeFsParams = {}) {
   // Alias rewrites delete files under dist; fail closed on a symlinked root
   // so a stale alias removal cannot land inside the link target.
   assertRealOutputRoot(distDir, { fs: fsImpl });
-  const candidatesByAlias = collectStableRootRuntimeAliasCandidates(distDir, fsImpl);
+  const { candidatesByAlias } = collectStableRootRuntimeAliasCandidates(distDir, fsImpl);
 
   for (const [aliasFileName, candidates] of candidatesByAlias) {
     const aliasPath = path.join(distDir, aliasFileName);
@@ -496,26 +497,7 @@ export function rewriteRootRuntimeImportsToStableAliases(params: RuntimeFsParams
   const rootDir = params.rootDir ?? ROOT;
   const distDir = path.join(rootDir, "dist");
   const fsImpl = params.fs ?? fs;
-  let entries;
-  try {
-    entries = fsImpl.readdirSync(distDir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-
-  const candidatesByAlias = new Map<string, string[]>();
-  for (const entry of entries.toSorted((left, right) => left.name.localeCompare(right.name))) {
-    if (!entry.isFile()) {
-      continue;
-    }
-    const match = entry.name.match(ROOT_RUNTIME_ALIAS_PATTERN);
-    if (match?.groups?.base) {
-      const aliasFileName = `${match.groups.base}.js`;
-      const candidates = candidatesByAlias.get(aliasFileName) ?? [];
-      candidates.push(entry.name);
-      candidatesByAlias.set(aliasFileName, candidates);
-    }
-  }
+  const { entries, candidatesByAlias } = collectStableRootRuntimeAliasCandidates(distDir, fsImpl);
   const runtimeAliasFiles = new Map<string, string>();
   for (const [aliasFileName, candidates] of candidatesByAlias) {
     const candidate = resolveStableRootRuntimeAliasCandidate(
@@ -536,7 +518,7 @@ export function rewriteRootRuntimeImportsToStableAliases(params: RuntimeFsParams
   }
 
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".js")) {
+    if (!entry.isFile() || !/\.m?js$/u.test(entry.name)) {
       continue;
     }
     if (ROOT_STABLE_RUNTIME_ALIAS_PATTERN.test(entry.name)) {
@@ -576,7 +558,10 @@ function resolveRootRuntimeCandidateByMarkers(
     return null;
   }
   const aliasBaseFileName = aliasFileName.replace(/\.js$/u, "");
-  const hashedPattern = new RegExp(`^${escapeRegExp(aliasBaseFileName)}-[A-Za-z0-9_-]+\\.js$`, "u");
+  const hashedPattern = new RegExp(
+    `^${escapeRegExp(aliasBaseFileName)}-[A-Za-z0-9_-]+\\.m?js$`,
+    "u",
+  );
   let entries;
   try {
     entries = fsImpl.readdirSync(distDir, { withFileTypes: true });

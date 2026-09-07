@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import YAML from "yaml";
 import { runCommandWithTimeout } from "../process/exec.js";
+import { hasErrnoCode } from "./errno.js";
 import { prepareGitRuntimePromotion } from "./update-runner-git-runtime.js";
 import { updateGitCheckout } from "./update-runner-git.js";
 import type { CommandRunner, UpdateRunnerOptions } from "./update-runner-types.js";
@@ -154,7 +155,7 @@ describe("Git candidate activation", () => {
     );
     await fs.writeFile(
       path.join(remote, ".gitignore"),
-      "node_modules/\ndist/\n.artifacts\n.pnpm\ncache/\n*.tmp\n",
+      "node_modules/\ndist/\n.artifacts\n.pnpm\ncache/\n",
     );
     await git(remote, "add", ".");
     await git(remote, "commit", "-m", "base");
@@ -232,6 +233,15 @@ describe("Git candidate activation", () => {
     });
   }
 
+  async function expectNoRuntimeStagingPaths() {
+    const entries = await fs.readdir(root, { recursive: true });
+    expect(
+      entries.filter((entry) =>
+        /\.openclaw-update-[0-9a-f]{8}-[0-9a-f-]{27}\.tmp(?:\/|$)/u.test(entry),
+      ),
+    ).toEqual([]);
+  }
+
   it.each(["dev", "stable", "beta"] as const)(
     "does not stop or build an already-current %s checkout",
     async (channel) => {
@@ -254,22 +264,72 @@ describe("Git candidate activation", () => {
     });
     expect(result.status, JSON.stringify(result)).toBe("ok");
     expect(events).toEqual(["build", "prepare exposure", "validate", "stop"]);
+    await expectRuntime(root, beforeSha);
+    await expectNoRuntimeStagingPaths();
   });
 
-  it("preserves source changes made during validation without stopping the service", async () => {
-    await advanceRemote();
-    const result = await update({
-      validateCandidate: async () => {
-        await fs.writeFile(path.join(root, "operator-change.txt"), "keep this change");
-      },
-    });
+  it("does not exempt stale staging paths during initial admission", async () => {
+    const stale = path.join(root, "dist.openclaw-update-00000000-0000-0000-0000-000000000000.tmp");
+    await fs.mkdir(stale);
+    await fs.writeFile(path.join(stale, "candidate"), "operator-owned");
+    const result = await update();
     expect(result).toMatchObject({ status: "skipped", reason: "dirty" });
-    expect(stopped).toBe(false);
-    expect(await fs.readFile(path.join(root, "operator-change.txt"), "utf8")).toBe(
-      "keep this change",
-    );
-    expect(await git(root, "rev-parse", "HEAD")).toBe(beforeSha);
+    expect(events).toEqual([]);
+    expect(await fs.readFile(path.join(stale, "candidate"), "utf8")).toBe("operator-owned");
   });
+
+  it.each([
+    { mutation: "untracked", inspection: false },
+    { mutation: "untracked", inspection: true },
+    { mutation: "tracked", inspection: false },
+    { mutation: "head", inspection: false },
+    { mutation: "branch", inspection: false },
+  ] as const)(
+    "preserves $mutation source changes made during validation without stopping the service (database inspection: $inspection)",
+    async ({ mutation, inspection }) => {
+      await advanceRemote();
+      const result = await update({
+        ...(inspection ? { inspectGitTarget: async () => undefined } : {}),
+        validateCandidate: async () => {
+          if (mutation === "untracked") {
+            await fs.mkdir(path.join(root, "dist.openclaw-update-operator.tmp"));
+            await fs.writeFile(
+              path.join(root, "dist.openclaw-update-operator.tmp", "keep.txt"),
+              "keep this change",
+            );
+          } else if (mutation === "tracked") {
+            await fs.appendFile(path.join(root, "package.json"), "\n");
+          } else if (mutation === "head") {
+            await fs.writeFile(path.join(root, "operator-change.txt"), "committed change");
+            await git(root, "add", "operator-change.txt");
+            await git(root, "commit", "-m", "operator change");
+          } else {
+            await git(root, "checkout", "-b", "operator-branch");
+          }
+        },
+      });
+      expect(result).toMatchObject({ status: "skipped", reason: "dirty" });
+      expect(stopped).toBe(false);
+      if (mutation === "untracked") {
+        expect(
+          await fs.readFile(
+            path.join(root, "dist.openclaw-update-operator.tmp", "keep.txt"),
+            "utf8",
+          ),
+        ).toBe("keep this change");
+      } else if (mutation === "tracked") {
+        expect(await fs.readFile(path.join(root, "package.json"), "utf8")).toMatch(/\n$/u);
+      } else if (mutation === "head") {
+        expect(await git(root, "rev-parse", "HEAD")).not.toBe(beforeSha);
+      } else {
+        expect(await git(root, "branch", "--show-current")).toBe("operator-branch");
+      }
+      if (mutation !== "head") {
+        expect(await git(root, "rev-parse", "HEAD")).toBe(beforeSha);
+      }
+      await expectNoRuntimeStagingPaths();
+    },
+  );
 
   it.each([
     { source: "workspace", version: "10.23.0", dirtyWorkspace: false },
@@ -418,16 +478,18 @@ describe("Git candidate activation", () => {
   );
 
   it.each([
-    { layout: "node_modules/.pnpm", localCommit: false },
-    { layout: "node_modules/.pnpm", localCommit: true },
-    { layout: ".pnpm", localCommit: false },
-    { layout: "cache/deps", localCommit: false },
-    { layout: "../store", localCommit: false },
-    { layout: "external", localCommit: false },
-    { layout: "symlink", localCommit: false },
+    { layout: "node_modules/.pnpm", localCommit: false, inspection: false },
+    { layout: "node_modules/.pnpm", localCommit: true, inspection: false },
+    { layout: ".pnpm", localCommit: false, inspection: false },
+    { layout: "cache/deps", localCommit: false, inspection: false },
+    { layout: "../store", localCommit: false, inspection: false },
+    { layout: "external", localCommit: false, inspection: false },
+    { layout: "symlink", localCommit: false, inspection: false },
+    { layout: "node_modules/.pnpm", localCommit: false, inspection: true },
+    { layout: "node_modules/.pnpm", localCommit: true, inspection: true },
   ] as const)(
-    "activates the validated $layout runtime (preserving local commits: $localCommit)",
-    async ({ layout, localCommit }) => {
+    "activates the validated $layout runtime (preserving local commits: $localCommit, database inspection: $inspection)",
+    async ({ layout, localCommit, inspection }) => {
       virtualStoreLayout = layout;
       await writeRuntime(root, beforeSha, path.join(directory, "shared-store"), layout);
       const target = await advanceRemote();
@@ -444,7 +506,7 @@ describe("Git candidate activation", () => {
       const unrelated = path.join(root, "operator-project", "node_modules", "keep.cjs");
       await fs.mkdir(path.dirname(unrelated), { recursive: true });
       await fs.writeFile(unrelated, "operator-owned");
-      const result = await update();
+      const result = await update(inspection ? { inspectGitTarget: async () => undefined } : {});
       expect(await fs.readFile(unrelated, "utf8")).toBe("operator-owned");
       expect(result.status, JSON.stringify(result)).toBe("ok");
       expect(events).toEqual(["build", "validate", "stop", "migrate"]);
@@ -452,8 +514,11 @@ describe("Git candidate activation", () => {
       expect(result.before?.buildId).toBe(beforeSha);
       expect(result.after).toMatchObject({ sha: current, buildId: current });
       expect(await git(root, "merge-base", current, target)).toBe(target);
+      expect.soft(await git(root, "rev-parse", "@{upstream}")).toBe(target);
       if (localCommit) {
         expect(await fs.readFile(path.join(root, "local.txt"), "utf8")).toBe("operator change\n");
+        const committer = await git(root, "log", "-1", "--format=%cn <%ce>");
+        expect.soft(committer === "OpenClaw Test <openclaw@example.com>").toBe(true);
       }
       await expectRuntime(root, current);
       const manifest: { virtualStoreDir: string } = JSON.parse(
@@ -471,7 +536,56 @@ describe("Git candidate activation", () => {
       expect(await fs.realpath(path.join(root, "node_modules", "virtual-runtime"))).toBe(
         path.join(expectedStore, current, "node_modules", "virtual-runtime"),
       );
-      expect(await fs.readdir(path.join(root, ".artifacts"))).toEqual([]);
+      const retainedArtifacts = await fs
+        .readdir(path.join(root, ".artifacts"))
+        .catch((error: unknown) => {
+          if (!hasErrnoCode(error, "ENOENT")) {
+            throw error;
+          }
+          return [];
+        });
+      expect(retainedArtifacts).toEqual([]);
+    },
+  );
+
+  it.each([false, true])(
+    "preserves a local upstream without inventing a remote ref (database inspection: %s)",
+    async (inspection) => {
+      const target = await advanceRemote();
+      await git(root, "fetch", "origin");
+      await git(root, "branch", "operator-target", target);
+      await git(root, "config", "branch.main.remote", ".");
+      await git(root, "config", "branch.main.merge", "refs/heads/operator-target");
+      const result = await update(inspection ? { inspectGitTarget: async () => undefined } : {});
+      expect(result.status, JSON.stringify(result)).toBe("ok");
+      expect(await git(root, "rev-parse", "HEAD")).toBe(target);
+      expect(await git(root, "rev-parse", "--symbolic-full-name", "@{upstream}")).toBe(
+        "refs/heads/operator-target",
+      );
+      await expectRuntime(root, target);
+    },
+  );
+
+  it.each([false, true])(
+    "preserves required signatures when a candidate rebase fails (database inspection: %s)",
+    async (inspection) => {
+      await advanceRemote();
+      await fs.writeFile(path.join(root, "local.txt"), "operator change\n");
+      await git(root, "add", "local.txt");
+      await git(root, "commit", "-m", "local change");
+      beforeSha = await git(root, "rev-parse", "HEAD");
+      await writeRuntime(root, beforeSha, path.join(directory, "shared-store"), virtualStoreLayout);
+      // A deliberately non-signing executable rejects Git's signing request without a key.
+      await git(root, "config", "gpg.program", process.execPath);
+      await git(root, "config", "commit.gpgSign", "true");
+      const result = await update(inspection ? { inspectGitTarget: async () => undefined } : {});
+      // The existing fallback can retain the old candidate without creating a commit.
+      expect(result.status, JSON.stringify(result)).toBe("ok");
+      expect(
+        result.steps.some((step) => /preflight rebase \(/u.test(step.name) && step.exitCode !== 0),
+      ).toBe(true);
+      expect(await git(root, "rev-parse", "HEAD")).toBe(beforeSha);
+      await expectRuntime(root, beforeSha);
     },
   );
 
@@ -538,6 +652,42 @@ describe("Git candidate activation", () => {
     );
     expect(await fs.readdir(path.join(root, ".artifacts"))).toEqual([]);
   });
+
+  it.each(["working", "staged", "committed"] as const)(
+    "refuses activation when validation repairs %s source outside the selected commit",
+    async (repairState) => {
+      await fs.writeFile(
+        path.join(remote, "openclaw.mjs"),
+        "throw new Error('broken launcher');\n",
+      );
+      const target = await advanceRemote();
+      let validated = false;
+      const result = await update({
+        devTarget: { mode: "detached", ref: target },
+        validateCandidate: async (candidateRoot) => {
+          const launcher = path.join(candidateRoot, "openclaw.mjs");
+          await fs.writeFile(launcher, "export {};\n");
+          if (repairState !== "working") {
+            await git(candidateRoot, "add", "openclaw.mjs");
+          }
+          if (repairState === "committed") {
+            await git(candidateRoot, "commit", "-m", "repair launcher");
+          }
+          const probe = await runCommandWithTimeout([process.execPath, launcher], {
+            timeoutMs: 5000,
+          });
+          expect(probe.code).toBe(0);
+          validated = true;
+        },
+      });
+      expect(validated).toBe(true);
+      expect(result).toMatchObject({ status: "error", reason: "preflight-no-good-commit" });
+      expect(stopped).toBe(false);
+      expect(await git(root, "rev-parse", "HEAD")).toBe(beforeSha);
+      expect(await fs.readFile(path.join(root, "openclaw.mjs"), "utf8")).toBe("export {};\n");
+      expect(await fs.readdir(path.join(root, ".artifacts"))).toEqual([]);
+    },
+  );
 
   it.each([
     { layout: "node_modules/.pnpm", restoreSource: true, restoreRuntime: true },

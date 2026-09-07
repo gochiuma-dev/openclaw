@@ -11,15 +11,22 @@ import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js"
 import { renderUpdateRunReport } from "../../infra/update-run-report.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import type { PreManagedServiceStop } from "./update-command-service.js";
+import { createWindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
 
 const mocks = vi.hoisted(() => ({
   stop: vi.fn(),
-  restart: vi.fn(),
+  restart: vi.fn<typeof import("./update-command-service.js").maybeRestartService>(),
   reachable: vi.fn(),
+  execSchtasks: vi.fn<typeof import("../../daemon/schtasks-exec.js").execSchtasks>(),
+}));
+vi.mock("../../daemon/schtasks-exec.js", () => ({ execSchtasks: mocks.execSchtasks }));
+vi.mock("./update-command-service-maintenance.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./update-command-service-maintenance.js")>()),
+  createWindowsTaskAutoStartGuard: () => async () => {},
 }));
 vi.mock("./update-command-service-command.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-service-command.js")>()),
-  runUpdatedInstallGatewayCommand: async () => true,
+  runUpdatedInstallGatewayCommand: async () => "accepted",
 }));
 vi.mock("./update-command-service.js", () => ({
   maybeStopManagedServiceBeforeMutableUpdate: mocks.stop,
@@ -27,12 +34,14 @@ vi.mock("./update-command-service.js", () => ({
   maybeResumeWindowsTaskAutoStartAfterPackageUpdate: async (
     stopped: PreManagedServiceStop | undefined,
     safe: boolean,
-  ) => stopped?.windowsTaskAutoStartRecovery?.restore(safe),
+    guard?: () => Promise<void>,
+  ) => stopped?.windowsTaskAutoStartRecovery?.restore(safe, guard),
   resolveUpdatedGatewayRestartPort: async () => 19101,
 }));
 vi.mock("../daemon-cli/restart-health-probe.js", () => ({
   confirmGatewayReachable: mocks.reachable,
 }));
+import * as packageModule from "./update-command-package.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
 import { completeUpdateCommandRun } from "./update-command-run.js";
 import { resolveUpdateResultNextAction } from "./update-recovery-guidance.js";
@@ -40,7 +49,10 @@ import { resolveUpdateResultNextAction } from "./update-recovery-guidance.js";
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 let candidateRoot: string;
 let previousRoot: string;
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
 async function readPreviousConfig(env: NodeJS.ProcessEnv) {
   const snapshot = await createConfigIO({ env, pluginValidation: "skip" }).readConfigFileSnapshot();
   return snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig;
@@ -88,7 +100,7 @@ describe("verified package rollback", () => {
     });
     mocks.restart.mockImplementation(async ({ onVerified }) => {
       onVerified?.(125);
-      return true;
+      return "ok";
     });
   });
   it.each([
@@ -169,7 +181,7 @@ describe("verified package rollback", () => {
       });
       const nextAction = resolveUpdateResultNextAction({
         result: outcome.result,
-        managedGatewayStopped: !reachable,
+        serviceRunning: reachable,
         env,
       });
       expect(renderUpdateRunReport(row, { nextAction }).markdown).toContain(
@@ -178,8 +190,135 @@ describe("verified package rollback", () => {
     },
   );
   it.each([
+    { activated: false, healthy: true },
+    { activated: false, healthy: false },
+    { activated: true, healthy: true },
+    { activated: true, healthy: false },
+  ])(
+    "retains Windows suspension through rollback (activated=$activated, healthy=$healthy)",
+    async ({ activated, healthy }) => {
+      const stateDir = dirs.make("rollback-windows-owner-");
+      const env = { OPENCLAW_STATE_DIR: stateDir, OPENCLAW_WINDOWS_TASK_NAME: "rollback-fixture" };
+      const config = await readPreviousConfig(env);
+      const schemaVersions = await readUpdateStateSchemaVersions({ stateDir, config, env });
+      let enabled = true;
+      const actions: string[] = [];
+      mocks.execSchtasks.mockImplementation(async (args) => {
+        if (args[0] === "/Query") {
+          return {
+            code: 0,
+            stdout: `<Task><Settings><Enabled>${enabled}</Enabled></Settings></Task>`,
+            stderr: "",
+          };
+        }
+        const action = args[0] === "/Run" ? "/Run" : args.at(-1)!;
+        actions.push(action);
+        if (action === "/Run") {
+          return { code: enabled ? 0 : 1, stdout: "", stderr: enabled ? "" : "task disabled" };
+        }
+        enabled = action === "/ENABLE";
+        return { code: 0, stdout: "", stderr: "" };
+      });
+      const original = createWindowsTaskAutoStartRecovery({ serviceEnv: env });
+      await original.suspended;
+      original.beginMutation();
+      if (activated) {
+        await original.restore(true);
+      }
+      let fresh: ReturnType<typeof createWindowsTaskAutoStartRecovery> | undefined;
+      const service = {
+        stopped: true,
+        inspected: true,
+        runtimeInspected: true,
+        running: false,
+        serviceEnv: env,
+        serviceUpdateVerdict: {
+          kind: "owned" as const,
+          root: previousRoot,
+          fingerprint: "fixture",
+          refreshDefinition: false,
+        },
+      };
+      mocks.stop.mockImplementationOnce(async () => {
+        fresh = createWindowsTaskAutoStartRecovery({ serviceEnv: env });
+        const suspended = await fresh.suspended;
+        if (!suspended) {
+          await fresh.complete();
+        }
+        return { ...service, windowsTaskAutoStartRecovery: suspended ? fresh : undefined };
+      });
+      mocks.restart.mockImplementationOnce(async ({ refreshServiceEnv }) => {
+        expect(refreshServiceEnv).toBe(false);
+        const running = await mocks.execSchtasks(["/Run", "/TN", "rollback-fixture"]);
+        if (running.code !== 0) {
+          throw new Error(running.stderr);
+        }
+        return healthy ? "ok" : "restart-health-failed";
+      });
+      try {
+        const outcome = await rollbackFailedUpdate({
+          result: {
+            status: "error",
+            mode: "npm",
+            root: candidateRoot,
+            reason: "doctor-failed",
+            before: { version: "2026.9.1" },
+            after: { version: "2026.9.3" },
+            steps: [],
+            durationMs: 1,
+          },
+          previousRoot,
+          schemaVersions,
+          previousVerified: true,
+          packageTransaction: {
+            backupRoot: "/backup",
+            complete: vi.fn(async () => {}),
+            rollback: async () => ({
+              name: "package rollback",
+              activePackageRoot: previousRoot,
+              command: "restore",
+              cwd: previousRoot,
+              exitCode: 0,
+              durationMs: 1,
+            }),
+          },
+          config,
+          opts: { json: true },
+          preManagedServiceStop: { ...service, windowsTaskAutoStartRecovery: original },
+          timeoutMs: 1_000,
+        });
+        expect(enabled).toBe(true);
+        expect(outcome.rolledBack).toBe(healthy);
+        const retained = outcome.stoppedForRollback?.windowsTaskAutoStartRecovery;
+        expect(retained).toBe(activated ? fresh : original);
+        await retained?.complete(healthy);
+        expect(enabled).toBe(healthy);
+        expect(actions.slice(-2)).toEqual(healthy ? ["/ENABLE", "/Run"] : ["/Run", "/DISABLE"]);
+      } finally {
+        await fresh?.complete(false);
+        await original.complete(false);
+      }
+    },
+  );
+  it.each([
     { change: "none", previousVerified: true, restored: true, service: "stopped" },
+    { change: "new-agent", previousVerified: true, restored: true, service: "stopped" },
+    { change: "new-agent-foreign", previousVerified: true, restored: false, service: "stopped" },
+    {
+      change: "new-agent-previous-incompatible",
+      previousVerified: true,
+      restored: false,
+      service: "stopped",
+    },
+    {
+      change: "new-agent-previous-unknown",
+      previousVerified: true,
+      restored: false,
+      service: "stopped",
+    },
+    { change: "identity-read-failed", previousVerified: true, restored: true, service: "stopped" },
     { change: "shared", previousVerified: true, restored: false, service: "stopped" },
+    { change: "new-shared-deferred", previousVerified: true, restored: false, service: "stopped" },
     { change: "agent", previousVerified: true, restored: false, service: "stopped" },
     { change: "during-stop", previousVerified: true, restored: false, service: "stopped" },
     { change: "unknown-runtime", previousVerified: true, restored: false, service: "stopped" },
@@ -194,9 +333,29 @@ describe("verified package rollback", () => {
       const config = await readPreviousConfig({ ...process.env, OPENCLAW_STATE_DIR: stateDir });
       const shared = path.join(stateDir, "state/openclaw.sqlite");
       const agent = path.join(stateDir, "agents/main/agent/openclaw-agent.sqlite");
-      setVersion(shared, 7);
-      setVersion(agent, 3);
+      if (change !== "new-shared-deferred") {
+        setVersion(shared, 7);
+      }
+      if (!change.startsWith("new-agent")) {
+        setVersion(agent, 3);
+      }
       const schemaVersions = await readUpdateStateSchemaVersions({ stateDir, config: {} });
+      if (change === "new-shared-deferred") {
+        expect(schemaVersions.find((entry) => entry.path === shared)?.userVersion).toBeNull();
+        setVersion(shared, 7);
+        const database = new DatabaseSync(shared);
+        try {
+          database.exec(`
+            CREATE TABLE config_machine_state (state_key TEXT PRIMARY KEY, value_json TEXT, updated_at_ms INTEGER);
+            INSERT INTO config_machine_state VALUES ('state.schema.contentVersion', '8', 0);
+          `);
+        } finally {
+          database.close();
+        }
+      }
+      if (change.startsWith("new-agent")) {
+        setVersion(agent, change === "new-agent-foreign" ? 4 : 3);
+      }
       if (change === "shared") {
         setVersion(shared, 8);
       }
@@ -227,11 +386,24 @@ describe("verified package rollback", () => {
         exitCode: 0,
         durationMs: 1,
       }));
+      if (change === "identity-read-failed") {
+        vi.spyOn(packageModule, "readPackageUpdateIdentity").mockRejectedValueOnce(
+          new Error("Diagnostic identity read failed after verified restoration"),
+        );
+      }
       const outcome = await rollbackFailedUpdate({
         result,
         previousRoot,
         nodeRunner: process.execPath,
         schemaVersions,
+        candidateSchemaVersions: { state: change === "new-shared-deferred" ? 8 : 7, agent: 3 },
+        previousSchemaVersions:
+          change === "new-agent-previous-unknown"
+            ? undefined
+            : {
+                state: 7,
+                agent: change === "new-agent-previous-incompatible" ? 2 : 3,
+              },
         previousVerified,
         packageTransaction: { backupRoot: "/backup", rollback, complete: vi.fn() },
         config,
@@ -256,7 +428,9 @@ describe("verified package rollback", () => {
         timeoutMs: 1_000,
       });
       expect(outcome.rolledBack).toBe(restored);
-      expect(rollback, JSON.stringify(outcome)).toHaveBeenCalledTimes(change === "none" ? 1 : 0);
+      expect(rollback, JSON.stringify(outcome)).toHaveBeenCalledTimes(
+        change === "none" || change === "identity-read-failed" || change === "new-agent" ? 1 : 0,
+      );
       expect(mocks.restart).toHaveBeenCalledTimes(restored ? 1 : 0);
       if (service !== "stopped") {
         expect(mocks.stop).not.toHaveBeenCalled();
@@ -287,7 +461,9 @@ describe("verified package rollback", () => {
         );
       } else {
         expect(outcome.result.reason).toBe(
-          change === "unknown-runtime"
+          change === "unknown-runtime" ||
+            change === "new-shared-deferred" ||
+            change.startsWith("new-agent-previous-")
             ? "rollback-state-unverified"
             : previousVerified
               ? "state-migrated-no-rollback"
@@ -295,6 +471,10 @@ describe("verified package rollback", () => {
         );
         if (!previousVerified) {
           expect(outcome.result).toMatchObject({ root: previousRoot, after: result.before });
+        }
+        if (change.startsWith("new-agent-previous-")) {
+          expect(outcome.result).toMatchObject({ root: candidateRoot, after: result.after });
+          expect(mocks.stop).not.toHaveBeenCalled();
         }
       }
     },
@@ -305,6 +485,8 @@ describe("verified package rollback", () => {
     const stopped = {
       stopped: true,
       windowsTaskAutoStartRecovery: {
+        suspended: Promise.resolve(true),
+        handoff: () => {},
         beginMutation: () => {},
         restore: vi.fn(async () => {}),
         complete,
@@ -345,10 +527,11 @@ describe("verified package rollback", () => {
     "restored-shims-failed",
     "partial-restore",
     "restart-unhealthy",
+    "restart-refused",
     "restart-threw",
   ] as const)("retains active installation identity after %s", async (failure) => {
     const restoredPackage = failure !== "source-failed" && failure !== "partial-restore";
-    const rollbackSucceeded = failure === "restart-unhealthy" || failure === "restart-threw";
+    const rollbackSucceeded = failure.startsWith("restart-");
     const activePackageRoot =
       failure === "partial-restore" ? null : restoredPackage ? previousRoot : candidateRoot;
     const stateDir = dirs.make("rollback-source-failed-");
@@ -368,7 +551,9 @@ describe("verified package rollback", () => {
     if (failure === "restart-threw") {
       mocks.restart.mockRejectedValueOnce(new Error("Service restart transport failed"));
     } else {
-      mocks.restart.mockResolvedValueOnce(false);
+      mocks.restart.mockResolvedValueOnce(
+        failure === "restart-unhealthy" ? "restart-health-failed" : "failed",
+      );
     }
     const outcome = await rollbackFailedUpdate({
       result,
