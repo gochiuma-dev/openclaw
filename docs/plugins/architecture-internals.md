@@ -129,6 +129,12 @@ hashing. Activation and runtime service generations can change while their
 package metadata stays fixed. Account health and authentication state are not
 part of the immutable package inventory.
 
+The same cache generation prepares installed-index scope lookups, compiled model
+matching patterns, parsed install-record projections, and manifest fingerprints
+once per immutable index. Mutable management indexes remain uncached. Lookup
+methods and install-record results remain caller-owned; enablement and trust are
+evaluated from the current operation's policy rather than stored in these facts.
+
 Provider auth aliases are normalized and indexed with the snapshot. Lookups
 select among those prepared candidates using the current workspace trust config;
 they do not cache trust decisions or credentials. Callers supplying a partial
@@ -248,6 +254,12 @@ Provider plugins have three layers:
 OpenClaw still owns the generic agent loop, failover, transcript handling, and
 tool policy. These hooks are the extension surface for provider-specific
 behavior without needing a whole custom inference transport.
+
+Hook lookup uses the prepared generation or a matching loaded registry first.
+On a miss, provider/model-scoped discovery reuses the loader's registry cache;
+explicit runtime-discovery invalidation clears that lookup rather than leaving
+another provider cache holding old hooks. Attempt-prepared provider handles
+retain their selected plugin, while each hook receives the current call context.
 
 Use manifest `setup.providers[].envVars` when the provider has env-based
 credentials that generic auth/status/model-picker paths should see without

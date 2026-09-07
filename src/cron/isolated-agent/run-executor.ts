@@ -25,6 +25,7 @@ import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import type { ModelFallbackClassifiedResult } from "../../agents/model-fallback-attempt.js";
 import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
 import { resolveConfiguredThinkingDefault } from "../../agents/model-thinking-default.js";
+import { rootedAgentRunParams } from "../../agents/rooted-run-params.js";
 import { wrapUntrustedPromptDataBlock } from "../../agents/sanitize-for-prompt.js";
 import { resolveScheduledToolPolicyContext } from "../../agents/scheduled-tool-policy.js";
 import { withLocalSessionPlacementTurnSettlement } from "../../agents/session-placement-admission.js";
@@ -425,13 +426,14 @@ function createCronPromptExecutor(
             errorContext: "cron user turn transcript",
           });
     pendingUserTurn = { promptText, recorder: userTurnTranscriptRecorder };
+    const runId = params.cronSession.sessionEntry.sessionId;
     const contextEngineLogicalTurnLease = await createContextEngineLogicalTurnLease({
+      identity: { runId, sessionId: runId },
       config: params.cfgWithAgentDefaults,
       agentDir: params.agentDir,
       workspaceDir: params.workspaceDir,
     });
     let acceptedContextEngineTurnCandidate: ContextEngineTurnAttemptFacts | undefined;
-    const runId = params.cronSession.sessionEntry.sessionId;
     const basePreparedRunAdmission = prepareAgentRunAdmission({
       operationalRunInstance: createOperationalRunInstanceRef(runId),
       cfg: params.cfgWithAgentDefaults,
@@ -568,7 +570,6 @@ function createCronPromptExecutor(
           sessionKey: params.runSessionKey,
           sessionEntry: params.cronSession.sessionEntry,
         });
-        assertCronExecutionRootRuntime(params.executionRoot, candidateRuntime);
         const candidateConfiguredThinkLevel =
           params.immutableThinkLevel ??
           resolveConfiguredThinkingDefault({
@@ -627,6 +628,12 @@ function createCronPromptExecutor(
                 modelId: modelOverride,
               }) ?? providerOverride));
         const cliExecution = isCliProvider(executionProvider, params.cfgWithAgentDefaults);
+        const rootedExecution = params.executionRoot ? { root: params.executionRoot } : undefined;
+        assertCronExecutionRootRuntime(
+          params.executionRoot,
+          candidateRuntime,
+          cliExecution && Boolean(rootedExecution),
+        );
         assertCronRuntimeAuthorityCandidate({
           authority: params.job.runtimeAuthority,
           candidateRuntime,
@@ -687,7 +694,9 @@ function createCronPromptExecutor(
                 sessionFile,
                 storePath: params.cronSession.storePath,
                 persistAssistantTranscript: true,
-                workspaceDir: params.workspaceDir,
+                workspaceDir: params.executionRoot ?? params.workspaceDir,
+                bootstrapWorkspaceDir: params.workspaceDir,
+                rootedExecution,
                 config: params.cfgWithAgentDefaults,
                 prompt: promptText,
                 finalizePromptForResolvedTools,
@@ -808,12 +817,7 @@ function createCronPromptExecutor(
           messageThreadId: params.resolvedDelivery.threadId,
           currentChannelId,
           agentDir: params.agentDir,
-          workspaceDir: params.executionRoot ?? params.workspaceDir,
-          bootstrapWorkspaceDir: params.workspaceDir,
-          cwd: params.executionRoot,
-          sessionRoot: params.executionRoot,
-          requireWritableSandbox: params.executionRoot ? true : undefined,
-          requireWorkspaceOnly: params.executionRoot ? true : undefined,
+          ...rootedAgentRunParams(params.workspaceDir, params.executionRoot),
           config: params.cfgWithAgentDefaults,
           skillsSnapshot: params.skillsSnapshot,
           prompt: promptText,

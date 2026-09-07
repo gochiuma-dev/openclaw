@@ -11,6 +11,7 @@ import {
   getActivePluginHttpRouteRegistryVersion,
 } from "../plugins/runtime.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/account-id.js";
+import { isTranscriptTitleOnlyConfigChange } from "../transcripts/config-reload.js";
 import { isPlainObject } from "../utils.js";
 import { canHotReloadGatewayAuthCredentials } from "./auth-resolve.js";
 
@@ -82,6 +83,9 @@ type GatewayReloadPlanOptions = {
   /** Candidate config used to reject removed, unknown, or unresolvable account targets. */
   candidateConfig?: OpenClawConfig;
   previousConfig?: OpenClawConfig;
+  /** Authored comparison snapshots retain intent that runtime overlays may hide. */
+  previousCompareConfig?: OpenClawConfig;
+  candidateCompareConfig?: OpenClawConfig;
 };
 
 const PLUGIN_INSTALL_TIMESTAMP_KEYS = ["installedAt", "resolvedAt"] as const;
@@ -101,13 +105,32 @@ const SHARED_CHANNEL_PREFIXES = [
 ];
 
 function matchesReloadPrefix(path: string, prefix: string): boolean {
+  if (prefix.includes("*")) {
+    const segments = path.split(".");
+    return prefix
+      .split(".")
+      .every((segment, index) =>
+        segment === "*" ? Boolean(segments[index]) : segment === segments[index],
+      );
+  }
   return path === prefix || path.startsWith(`${prefix}.`);
+}
+
+function compareReloadRules(left: ReloadRule, right: ReloadRule): number {
+  const leftSegments = left.prefix.split(".");
+  const rightSegments = right.prefix.split(".");
+  // A long record key must not outrank a deeper wildcard policy boundary.
+  return (
+    rightSegments.length - leftSegments.length ||
+    leftSegments.filter((segment) => segment === "*").length -
+      rightSegments.filter((segment) => segment === "*").length
+  );
 }
 
 function expandReloadPolicies(policies: ReloadPolicy[]): ReloadRule[] {
   return policies
     .flatMap(({ prefixes, ...policy }) => prefixes.map((prefix) => ({ ...policy, prefix })))
-    .toSorted((a, b) => b.prefix.length - a.prefix.length);
+    .toSorted(compareReloadRules);
 }
 
 const CORE_RELOAD_POLICIES: ReloadPolicy[] = [
@@ -352,7 +375,7 @@ function getReloadPolicyCatalog() {
   }
   // Narrow config contracts must override broad owner fallbacks. Sort once per
   // registry snapshot so the hot path can retain first-match semantics.
-  rules.sort((a, b) => b.prefix.length - a.prefix.length);
+  rules.sort(compareReloadRules);
   cachedCatalog = {
     registry,
     version,
@@ -504,6 +527,22 @@ export function buildGatewayReloadPlan(
   };
 
   for (const path of changedPaths) {
+    // Arrays diff at their parent path. Titles configure future admissions;
+    // retaining this exact live capture must not rename or finalize its archive.
+    if (
+      path === "transcripts.autoStart" &&
+      !forceChangedPaths.has(path) &&
+      options.previousConfig &&
+      options.candidateConfig &&
+      options.candidateConfig.gateway?.reload?.mode !== "off" &&
+      isTranscriptTitleOnlyConfigChange(
+        options.previousCompareConfig ?? options.previousConfig,
+        options.candidateCompareConfig ?? options.candidateConfig,
+      )
+    ) {
+      plan.noopPaths.push(path);
+      continue;
+    }
     const isTimestampNoop =
       !forceChangedPaths.has(path) &&
       (noopPaths.size > 0 ? noopPaths.has(path) : isPluginInstallTimestampPath(path));

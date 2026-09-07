@@ -6,6 +6,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { collectSqliteSchemaIssues } from "../infra/sqlite-schema-contract.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
+import { createUpdateRun } from "../infra/update-run-ledger.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   OPENCLAW_AGENT_SCHEMA_VERSION,
@@ -354,6 +355,90 @@ describe("OpenClaw database schema preflight", () => {
       assertOpenClawDatabasesReady({ env, operation: "gateway-restart" }),
     ).resolves.toBeUndefined();
   });
+
+  it.each([false, true])(
+    "recognizes deferred content and still checks its shape (damaged: %s)",
+    async (damaged) => {
+      const stateDir = tempDirs.make("openclaw-preflight-deferred-schema-");
+      const env = { OPENCLAW_STATE_DIR: stateDir };
+      const opened = openOpenClawStateDatabase({ env });
+      const run = createUpdateRun({ trigger: "cli", before: { version: "2026.9.2" } }, { env });
+      const statePath = opened.path;
+      closeOpenClawStateDatabaseForTest();
+      const { DatabaseSync } = requireNodeSqlite();
+      const database = new DatabaseSync(statePath);
+      try {
+        database.exec(
+          `PRAGMA user_version = ${OPENCLAW_STATE_SCHEMA_VERSION - 1}; UPDATE schema_meta SET schema_version = ${OPENCLAW_STATE_SCHEMA_VERSION - 1};`,
+        );
+        database
+          .prepare(
+            "INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)",
+          )
+          .run("state.schema.contentVersion", String(OPENCLAW_STATE_SCHEMA_VERSION), Date.now());
+        if (damaged) {
+          database.exec(
+            "ALTER TABLE worktrees DROP COLUMN run_end_cleanup_json; ALTER TABLE worktrees ADD COLUMN run_end_cleanup_json INTEGER;",
+          );
+        }
+      } finally {
+        database.close();
+      }
+      const before = snapshotSourceFamily(statePath);
+      const result = await preflightOpenClawDatabaseSchemas({
+        env,
+        verifyCurrentSchemaShape: true,
+        supportedVersions: {
+          state: OPENCLAW_STATE_SCHEMA_VERSION,
+          agent: OPENCLAW_AGENT_SCHEMA_VERSION,
+        },
+      });
+      expect(result.pendingMigrations).toBeUndefined();
+      expect(result.incompatible).toEqual([]);
+      expect(result.deferredSchemaPublications).toEqual([
+        expect.objectContaining({
+          kind: "state",
+          path: statePath,
+          foundVersion: OPENCLAW_STATE_SCHEMA_VERSION - 1,
+          contentVersion: OPENCLAW_STATE_SCHEMA_VERSION,
+          runId: run.runId,
+          message: expect.stringContaining(
+            `version publication deferred until update run ${run.runId} finishes`,
+          ),
+        }),
+      ]);
+      expect(result.indeterminate).toEqual(
+        damaged
+          ? [
+              expect.objectContaining({
+                kind: "state",
+                reason: expect.stringContaining("column definitions differ for worktrees"),
+              }),
+            ]
+          : [],
+      );
+      expect(snapshotSourceFamily(statePath)).toEqual(before);
+      if (!damaged) {
+        await expect(
+          preflightOpenClawDatabaseSchemas({
+            env,
+            supportedVersions: {
+              state: OPENCLAW_STATE_SCHEMA_VERSION - 1,
+              agent: OPENCLAW_AGENT_SCHEMA_VERSION,
+            },
+          }),
+        ).resolves.toMatchObject({
+          incompatible: [expect.objectContaining({ foundVersion: OPENCLAW_STATE_SCHEMA_VERSION })],
+        });
+        await expect(preflightOpenClawStateDatabasePath(statePath)).resolves.toMatchObject({
+          status: "exact",
+          foundVersion: OPENCLAW_STATE_SCHEMA_VERSION - 1,
+          contentVersion: OPENCLAW_STATE_SCHEMA_VERSION,
+          deferredPublication: expect.objectContaining({ runId: run.runId }),
+        });
+      }
+    },
+  );
 
   it("accepts an older v6 state database without the lazy setup id during restart preflight", async () => {
     const stateDir = tempDirs.make("openclaw-database-preflight-older-v6-setup-id-");
@@ -758,4 +843,57 @@ describe("OpenClaw database schema preflight", () => {
       ],
     });
   });
+
+  it.runIf(process.platform !== "win32")(
+    "keeps partial configured-store inventory when one candidate lookup is denied",
+    async () => {
+      const stateDir = tempDirs.make("openclaw-configured-candidate-lookup-");
+      const visibleDir = tempDirs.make("openclaw-configured-visible-");
+      const deniedDir = tempDirs.make("openclaw-configured-denied-");
+      const visiblePath = path.join(visibleDir, "newer.sqlite");
+      const deniedPath = path.join(deniedDir, "owned.sqlite");
+      const absentPath = path.join(visibleDir, "absent.sqlite");
+      const { DatabaseSync } = requireNodeSqlite();
+      for (const databasePath of [visiblePath, deniedPath]) {
+        const database = new DatabaseSync(databasePath);
+        database.exec(
+          `PRAGMA user_version = ${OPENCLAW_AGENT_SCHEMA_VERSION + (databasePath === visiblePath ? 1 : 0)};`,
+        );
+        database.close();
+      }
+
+      fs.chmodSync(deniedDir, 0o000);
+      let result: Awaited<ReturnType<typeof preflightOpenClawDatabaseSchemas>>;
+      try {
+        result = await preflightOpenClawDatabaseSchemas({
+          env: { OPENCLAW_STATE_DIR: stateDir },
+          supportedVersions: {
+            state: OPENCLAW_STATE_SCHEMA_VERSION,
+            agent: OPENCLAW_AGENT_SCHEMA_VERSION,
+          },
+          configuredAgentDatabaseCandidatePaths: [visiblePath, deniedPath, absentPath],
+        });
+      } finally {
+        fs.chmodSync(deniedDir, 0o700);
+      }
+
+      expect(result).toEqual({
+        incompatible: [
+          {
+            kind: "agent",
+            path: visiblePath,
+            foundVersion: OPENCLAW_AGENT_SCHEMA_VERSION + 1,
+            supportedVersion: OPENCLAW_AGENT_SCHEMA_VERSION,
+          },
+        ],
+        indeterminate: [
+          {
+            kind: "agent",
+            path: deniedPath,
+            reason: expect.stringMatching(/EACCES|permission denied/iu),
+          },
+        ],
+      });
+    },
+  );
 });

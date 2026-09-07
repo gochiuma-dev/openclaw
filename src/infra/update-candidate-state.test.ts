@@ -4,6 +4,13 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { runCommandBuffered } from "../process/exec.js";
+import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
+import { withAgentDatabaseMaintenanceLease } from "../state/openclaw-agent-db.js";
+import {
+  closeOpenClawStateDatabaseByPath,
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
@@ -19,6 +26,7 @@ beforeEach(async () => {
   root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "candidate-state-")));
 });
 afterEach(async () => {
+  closeOpenClawStateDatabaseForTest();
   await fs.rm(root, { recursive: true, force: true });
 });
 
@@ -55,7 +63,7 @@ async function runSnapshotWorker(input: Parameters<typeof snapshotUpdateCandidat
 }
 
 it.each(["DELETE", "WAL"])(
-  "copies registered databases in %s mode without changing source artifacts",
+  "copies registered databases in %s mode without source process leases or source artifact changes",
   async (journalMode) => {
     const source = path.join(root, "source");
     const target = path.join(root, "copy");
@@ -64,16 +72,37 @@ it.each(["DELETE", "WAL"])(
     const external = path.join(root, "external", "openclaw-agent.sqlite");
     await createDatabase(canonical);
     await createDatabase(external);
-    await createDatabase(
-      shared,
-      "CREATE TABLE agent_databases(agent_id TEXT, path TEXT, PRIMARY KEY(agent_id,path));",
+    const registry = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: source } }).db;
+    const insert = registry.prepare(
+      "INSERT INTO agent_databases (agent_id, path, schema_version, last_seen_at) VALUES (?, ?, 3, 0)",
     );
-    const registry = openNodeSqliteDatabase(shared);
-    const insert = registry.prepare("INSERT INTO agent_databases VALUES (?, ?)");
     insert.run("external", external);
     insert.run("main", canonical);
     insert.run("main", path.relative(source, canonical));
-    registry.close();
+    const now = Date.now();
+    registry
+      .prepare("INSERT INTO agent_database_leases VALUES (?, ?, ?, ?, ?, ?)")
+      .run(
+        "live-main",
+        "main",
+        canonical,
+        process.pid,
+        getFileLockProcessStartTime(process.pid),
+        now,
+      );
+    registry
+      .prepare("INSERT INTO state_leases VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(
+        "core:agent-database-maintenance",
+        "global",
+        "live-source-owner",
+        now + 60_000,
+        now,
+        null,
+        now,
+        now,
+      );
+    closeOpenClawStateDatabaseByPath(shared);
     const sources = [shared, canonical, external];
     for (const file of sources) {
       const database = openNodeSqliteDatabase(file);
@@ -89,16 +118,29 @@ it.each(["DELETE", "WAL"])(
       );
     const before = await artifacts();
     const inspected = await readUpdateStateSchemaVersions({ stateDir: source, config: {} });
-    expect(inspected.filter((entry) => entry.userVersion === 3)).toHaveLength(3);
+    expect(inspected.filter((entry) => entry.userVersion === 3)).toHaveLength(2);
     expect(await artifacts()).toEqual(before);
     const versions = await runSnapshotWorker({
       stateDir: source,
       targetStateDir: target,
       config: {},
     });
-    expect(versions.filter((entry) => entry.userVersion === 3)).toHaveLength(3);
+    expect(versions).toEqual(inspected);
+    await expect(
+      withAgentDatabaseMaintenanceLease(
+        {
+          env: {
+            OPENCLAW_STATE_DIR: target,
+            OPENCLAW_CONFIG_PATH: path.join(target, "openclaw.json"),
+          },
+        },
+        async (maintenance) => maintenance.assertOwned(),
+      ),
+    ).resolves.toBeUndefined();
     expect(await artifacts()).toEqual(before);
     const copiedRegistry = openNodeSqliteDatabase(path.join(target, "state", "openclaw.sqlite"));
+    expect(copiedRegistry.prepare("SELECT * FROM agent_database_leases").all()).toEqual([]);
+    expect(copiedRegistry.prepare("SELECT * FROM state_leases").all()).toEqual([]);
     expect(
       copiedRegistry
         .prepare("SELECT count(*) AS count FROM agent_databases WHERE agent_id = 'main'")
@@ -125,6 +167,32 @@ it.each(["DELETE", "WAL"])(
   },
 );
 
+it("retains deferred content in both inspection and rehearsal snapshots", async () => {
+  const stateDir = path.join(root, "deferred");
+  const file = path.join(stateDir, "state", "openclaw.sqlite");
+  await createDatabase(
+    file,
+    `
+    PRAGMA user_version = 15;
+    CREATE TABLE config_machine_state (state_key TEXT PRIMARY KEY, value_json TEXT, updated_at_ms INTEGER);
+    INSERT INTO config_machine_state VALUES ('state.schema.contentVersion', '16', 0);
+  `,
+  );
+  const inspected = await readUpdateStateSchemaVersions({ stateDir, config: {} });
+  expect(inspected.find((entry) => entry.path === file)).toEqual({
+    path: file,
+    userVersion: 15,
+    contentVersion: 16,
+  });
+  expect(
+    await runSnapshotWorker({
+      stateDir,
+      targetStateDir: path.join(root, "rehearsal"),
+      config: {},
+    }),
+  ).toEqual(inspected);
+});
+
 it("reads committed WAL schemas without ending the live writer's transaction", async () => {
   const stateDir = path.join(root, "live");
   const file = path.join(stateDir, "state", "openclaw.sqlite");
@@ -150,8 +218,18 @@ it("keeps absent stores explicit and observes newly created databases for rollba
   await createDatabase(main);
   const after = await readUpdateStateSchemaVersions({ stateDir, config: {} });
   expect(after.find((entry) => entry.path === main)?.userVersion).toBe(3);
-  expect(updateStateSchemaVersionsMatch(before, after)).toBe(false);
-  expect(updateStateSchemaVersionsMatch(after, after.toReversed())).toBe(true);
+  const sharedPath = path.join(stateDir, "state", "openclaw.sqlite");
+  expect(updateStateSchemaVersionsMatch(before, after, { sharedPath })).toBe(false);
+  const candidate = { sharedPath, candidateSchemaVersions: { state: 7, agent: 3 } };
+  expect(updateStateSchemaVersionsMatch(before, after, candidate)).toBe(true);
+  expect(
+    updateStateSchemaVersionsMatch(before, after, {
+      sharedPath,
+      candidateSchemaVersions: { state: 3, agent: 4 },
+    }),
+  ).toBe(false);
+  expect(updateStateSchemaVersionsMatch(after, before, candidate)).toBe(false);
+  expect(updateStateSchemaVersionsMatch(after, after.toReversed(), candidate)).toBe(true);
 });
 
 it("inspects with the installed candidate and selected Node after the old package is removed", async () => {

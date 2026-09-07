@@ -47,8 +47,8 @@ import type {
 } from "./auth-profiles/types.js";
 import {
   isActiveUnusableWindow,
-  isAuthCooldownBypassedForProvider,
   isProfileInCooldown,
+  readInlineProviderApiKeyUsage,
   resolveProfileUnusableUntil,
 } from "./auth-profiles/usage-state.js";
 import { resolveBundledCliBackendAuthPolicy } from "./cli-runner/cli-backend-auth-policy.js";
@@ -658,15 +658,8 @@ export function createModelAuthAvailabilityResolver(
     // Config-backed inline provider keys have no auth profile, so a recorded
     // billing/auth cooldown must hide them from browse availability the same way
     // it blocks their resolution — otherwise a cooled key still looks usable.
-    // Mirrors resolveInlineProviderApiKeyUnusableUntil, but reads the cooldown
-    // via usage-state primitives so this hot browse path stays independent of
-    // the auth-profiles usage module that many callers mock in tests.
-    const inlineUsageStats = isAuthCooldownBypassedForProvider(provider)
-      ? undefined
-      : store.usageStats?.[`inline-api-key:${normalizeProviderId(provider)}`];
-    const inlineKeyUnusableUntil = inlineUsageStats
-      ? resolveProfileUnusableUntil(inlineUsageStats)
-      : null;
+    const { stats: inlineUsageStats, unusableUntil: inlineKeyUnusableUntil } =
+      readInlineProviderApiKeyUsage(store, provider);
     if (inlineKeyUnusableUntil != null && inlineKeyUnusableUntil > now) {
       return {
         availability: false,

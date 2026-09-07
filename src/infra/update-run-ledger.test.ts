@@ -165,6 +165,19 @@ describe("update run ledger", () => {
     },
   );
 
+  it("reads rows persisted with the retired inferenceProbe verification fact", () => {
+    const options = isolatedOptions();
+    const run = createUpdateRun({ trigger: "cli" }, options);
+    recordUpdateRunVerification(run.runId, { serviceRunning: true }, options);
+    // Rows written before verification stopped recording inference keep the key;
+    // the non-strict record schema drops it instead of rejecting the run.
+    openOpenClawStateDatabase(options)
+      .db.prepare("UPDATE update_runs SET verification_json = ? WHERE run_id = ?")
+      .run(JSON.stringify({ serviceRunning: true, inferenceProbe: "passed" }), run.runId);
+
+    expect(getUpdateRun(run.runId, options)?.verification).toEqual({ serviceRunning: true });
+  });
+
   it("leaves a cold store without the history table unchanged", () => {
     const options = isolatedOptions();
     const { db } = openOpenClawStateDatabase(options);
@@ -305,7 +318,6 @@ describe("update run ledger", () => {
         settled: true,
         channelsReady: true,
         pluginErrors: [],
-        inferenceProbe: "unavailable",
       },
       options,
     );
@@ -372,6 +384,28 @@ describe("update run ledger", () => {
       }
     },
   );
+
+  it("records post-activation repair without reopening activation or retaining completed repair timestamps", () => {
+    const options = isolatedOptions();
+    const run = createUpdateRun({ trigger: "cli" }, options);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(run.createdAtMs + 100);
+    recordUpdateRunPhase(run.runId, "validating", {}, options);
+    recordUpdateRunPhase(run.runId, "repairing", {}, options);
+    recordUpdateRunPhase(run.runId, "activating", {}, options);
+    recordUpdateRunPhase(run.runId, "verifying", {}, options);
+    clock.mockReturnValue(run.createdAtMs + 200);
+    const repairing = recordUpdateRunPhase(run.runId, "repairing", {}, options);
+    expect(repairing.phase).toBe("repairing");
+    expect(repairing.steps.find((step) => step.step === "repairing")).toEqual({
+      step: "repairing",
+      status: "in_progress",
+      startedAtMs: run.createdAtMs + 200,
+    });
+    for (const phase of ["activating", "restarting", "validating"] as const) {
+      expect(recordUpdateRunPhase(run.runId, phase, {}, options).phase).toBe("repairing");
+    }
+    expect(recordUpdateRunPhase(run.runId, "verifying", {}, options).phase).toBe("verifying");
+  });
 
   it("lists newest runs deterministically and excludes terminal runs from active discovery", () => {
     const options = isolatedOptions();

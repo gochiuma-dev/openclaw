@@ -1759,6 +1759,28 @@ function installControlUiMockGateway(
     if (isRecord(response) && (response["__mockError"] || response.ok === false)) {
       return response;
     }
+    if (
+      method === "sessions.catalog.startTerminal" &&
+      isRecord(response) &&
+      typeof response.sessionId === "string" &&
+      typeof response.agentId === "string" &&
+      typeof response.shell === "string" &&
+      typeof response.cwd === "string" &&
+      typeof response.confined === "boolean"
+    ) {
+      terminalSessions.set(response.sessionId, {
+        sessionId: response.sessionId,
+        agentId: response.agentId,
+        shell: response.shell,
+        cwd: response.cwd,
+        confined: response.confined,
+        attached: true,
+        owner: "conn",
+        createdAtMs: Date.now(),
+        buffer: "",
+        seq: 0,
+      });
+    }
     if (isRecord(params) && typeof params.id === "string") {
       const kind =
         method === "approval.resolve"
@@ -2333,6 +2355,13 @@ function installControlUiMockGateway(
       }
       case "chat.abort":
         return { aborted: true };
+      case "skills.proposals.list":
+        return {
+          schema: "openclaw.skill-workshop.proposals-manifest.v1",
+          updatedAt: new Date().toISOString(),
+          proposals: [],
+          installedSkills: [],
+        };
       case "skills.status":
         return {
           workspaceDir: "/tmp/control-ui-mock/workspace",
@@ -2542,7 +2571,7 @@ function installControlUiMockGateway(
     let data = "";
     let session: MockTerminalSession | undefined;
     if (
-      method === "terminal.open" &&
+      (method === "terminal.open" || method === "sessions.catalog.startTerminal") &&
       isRecord(response) &&
       typeof response.sessionId === "string"
     ) {
@@ -2817,6 +2846,9 @@ function installControlUiMockGateway(
           ...(mockError ? { error: mockError } : { payload: resolvedPayload }),
           type: "res",
         });
+        if (!mockError) {
+          emitTerminalOutput(response.socket, response.method, response.params, resolvedPayload);
+        }
       }
     },
     suspendLatest() {

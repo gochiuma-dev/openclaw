@@ -107,6 +107,7 @@ export function renderNewSessionPlaceControls({
     worktreeAvailable: place.worktreeAvailable(),
     headBranch: branches?.headBranch,
     baseRef: place.baseRef,
+    repository: Boolean(place.remoteRepository),
   });
   const gatewayLabel = gateway.gatewayName
     ? t("newSession.gatewayNamed", { name: gateway.gatewayName })
@@ -114,12 +115,10 @@ export function renderNewSessionPlaceControls({
   return html`${
     nativeTerminal
       ? renderNewSessionTerminalHost({
-          hosts: data?.terminalHosts ?? [],
+          hosts: data?.terminalHosts,
           hostId: place.terminalHostId,
           submitting,
-          refreshing: gateway.catalogRetrying,
           onSelect: (hostId) => place.selectTerminalHost(hostId),
-          onRefresh: gateway.handleCatalogRetry,
         })
       : renderWhereChip({
           state: whereState,
@@ -182,7 +181,11 @@ export function renderNewSessionPlaceControls({
             ),
           projectAddAvailable:
             !nativeTerminal &&
-            canCallGatewayMethod(context?.gateway.snapshot, "projects.add", "operator.write"),
+            canCallGatewayMethod(
+              context?.gateway.snapshot,
+              place.remotePlacement ? "sessions.create" : "projects.add",
+              "operator.write",
+            ),
           remoteProjects: browser.projectSearchResult?.projects ?? [],
           selectedRemoteProject: browser.remoteProject,
           projectSearchCredentialMissing: browser.projectSearchResult?.credential === "missing",
@@ -212,6 +215,7 @@ export function renderNewSessionPlaceControls({
       ? renderCheckoutChip({
           state: checkoutState,
           remotePlacement: place.remotePlacement,
+          repository: Boolean(place.remoteRepository),
           folderLabel: projectState.label,
           worktree: place.worktree,
           worktreeAvailable: place.worktreeAvailable(),
