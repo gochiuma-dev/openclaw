@@ -1021,7 +1021,17 @@ export class VoiceCallWebhookServer {
    * entry point a socket-driven provider cannot reach the manager at all.
    */
   ingestEvents(events: NormalizedEvent[]): void {
-    this.processParsedEvents(events);
+    try {
+      this.processParsedEvents(events);
+    } catch (err) {
+      // The HTTP ingress contains a failed event in handleRequest's catch and
+      // answers the provider with an error. A socket sink has no such boundary:
+      // an event that fails closed here would surface inside the provider's
+      // socket callback and end the gateway process mid-call. The event stays
+      // failed - nothing is published and no call is dialed - but the process
+      // and every other active call survive it.
+      this.logger.error(`Failed to ingest provider events: ${String(err)}`);
+    }
   }
 
   private processParsedEvents(events: NormalizedEvent[]): boolean {
