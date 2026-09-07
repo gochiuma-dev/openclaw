@@ -238,6 +238,11 @@ describe("Provider model discovery auth preparation", () => {
     expect(plan.action === "write" ? plan.contents : "").not.toContain("rejected-oauth-a");
   });
 
+  // Whichever of these runs first reaches the real provider plugin runtime, which
+  // loads every bundled provider plugin: measured 143s on Linux CI against 358ms
+  // for the second case, because the tests above mock that path away. The 120s
+  // default fails the first case wherever build artifacts are cold, so the
+  // measured load cost is allowed explicitly rather than left to fail.
   it.each(["oauth", "token"] as const)(
     "uses subscription discovery for configured literal %s credentials without a profile",
     async (auth) => {
@@ -296,6 +301,7 @@ describe("Provider model discovery auth preparation", () => {
       expect(provider?.models.map((model) => model.id)).toContain("gpt-5.5");
       expect(store.profiles).toEqual({});
     },
+    300_000,
   );
 
   it("passes refreshed OAuth material to Chutes discovery without mutating the captured store", async () => {
