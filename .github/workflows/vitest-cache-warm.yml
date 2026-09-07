@@ -20,7 +20,10 @@ jobs:
   warm:
     # Shared CI cache publication is isolated from pull-request execution.
     # Trusted release/proof workflows may save only through the same authority contract.
-    if: github.repository == 'openclaw/openclaw'
+    # Cache keys are namespaced by github.repository, so a fork wanting its own warmed
+    # caches opts in by setting OPENCLAW_CI_CACHE_PUBLISHER_REPOSITORY to its own slug.
+    # Unset leaves canonical-only publication unchanged.
+    if: github.repository == 'openclaw/openclaw' || github.repository == vars.OPENCLAW_CI_CACHE_PUBLISHER_REPOSITORY
     runs-on: ${{ matrix.platform == 'macos' && 'macos-15' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404') }}
     timeout-minutes: 60
     strategy:
