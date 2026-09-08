@@ -37,6 +37,14 @@ on:
         description: 配布時の説明。省略すると ref と commit を入れる
         required: false
         type: string
+      flavor:
+        description: どの flavor を配るか
+        required: false
+        default: thirdParty
+        type: choice
+        options:
+          - thirdParty
+          - play
 
 permissions:
   contents: write
@@ -112,15 +120,20 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "release 署名でビルドする"
 
+      # flavor を指定して 1 つだけ作る。assembleDebug は play と thirdParty の
+      # **両方**を作るので、どちらを配るのかが曖昧になる（実際に 2 つ出た）。
       - name: APK をビルドする
         working-directory: apps/android
         env:
           STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          FLAVOR: ${{ inputs.flavor || 'thirdParty' }}
         run: |
           set -euo pipefail
-          args=(--no-daemon "assemble${{ steps.signing.outputs.variant }}")
+          # thirdParty → assembleThirdPartyDebug（先頭を大文字にする）
+          cap="$(printf '%s' "${FLAVOR:0:1}" | tr '[:lower:]' '[:upper:]')${FLAVOR:1}"
+          args=(--no-daemon "assemble${cap}${{ steps.signing.outputs.variant }}")
           if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
             # Gradle プロパティで渡す。コマンドラインには値を出さない。
             args+=(
@@ -138,8 +151,16 @@ jobs:
         id: apk
         run: |
           set -euo pipefail
-          path="$(find apps/android/app/build/outputs/apk -name '*.apk' -type f | sort | head -1)"
-          [ -n "$path" ] || { echo "APK が見つかりません"; exit 1; }
+          # flavor を指定して作っているので 1 つしか出ないはず。
+          # 2 つ以上あれば、どれを配るのか決められないので止める。
+          mapfile -t found < <(find apps/android/app/build/outputs/apk -name '*.apk' -type f | sort)
+          [ "${#found[@]}" -ge 1 ] || { echo "APK が見つかりません"; exit 1; }
+          if [ "${#found[@]}" -gt 1 ]; then
+            printf '複数の APK が出ました。どれを配るか決められません:\n'
+            printf '  %s\n' "${found[@]}"
+            exit 1
+          fi
+          path="${found[0]}"
           echo "path=${path}" >> "$GITHUB_OUTPUT"
           ls -l "$path"
 
