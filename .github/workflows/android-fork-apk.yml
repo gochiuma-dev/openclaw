@@ -1,0 +1,104 @@
+# フォーク用の手動 APK ビルド。
+#
+# 上流の android-release.yml は Release Publish の承認済み run を要求するので、
+# フォークの手元ビルドには使えない。こちらは workflow_dispatch だけで動く。
+#
+# 署名は Android SDK の既定 debug 鍵。**公開の共通鍵なので配布用ではない。**
+# 自分の端末に入れて更新インストールできれば足りる、という前提。
+name: Android Fork APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: ビルドする ref（省略時は起動したブランチ）
+        required: false
+        type: string
+      release_tag:
+        description: 作成する Release のタグ。省略すると android-fork-<短縮SHA>
+        required: false
+        type: string
+      prerelease:
+        description: プレリリースとして作る
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-fork-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: ビルドする対象を記録する
+        id: meta
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse --short HEAD)"
+          tag="${{ inputs.release_tag }}"
+          [ -n "$tag" ] || tag="android-fork-${sha}"
+          {
+            echo "sha=${sha}"
+            echo "tag=${tag}"
+          } >> "$GITHUB_OUTPUT"
+          echo "ref=$(git rev-parse HEAD) tag=${tag}"
+
+      - name: APK をビルドする
+        working-directory: apps/android
+        run: ./gradlew --no-daemon assembleDebug
+
+      # 出力名は build.gradle.kts が openclaw-<版>-debug.apk に決める。
+      # 版が変わっても拾えるよう、名前を決め打ちにせず探す。
+      - name: 生成物を確かめる
+        id: apk
+        run: |
+          set -euo pipefail
+          path="$(find apps/android/app/build/outputs/apk -name '*.apk' -type f | head -1)"
+          [ -n "$path" ] || { echo "APK が見つかりません"; exit 1; }
+          echo "path=${path}" >> "$GITHUB_OUTPUT"
+          ls -l "$path"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: openclaw-android-${{ steps.meta.outputs.sha }}
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Release に置く
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          APK: ${{ steps.apk.outputs.path }}
+        run: |
+          set -euo pipefail
+          notes="$(printf 'ref: %s\ncommit: %s\n\n**debug 署名。**Android SDK の既定鍵なので配布用ではない。' \
+            "${{ inputs.ref || github.ref_name }}" "$(git rev-parse HEAD)")"
+          # 同じタグへ二度流したときは資産を差し替える（--clobber）。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber
+          else
+            gh release create "$TAG" "$APK" \
+              --title "$TAG" --notes "$notes" \
+              ${{ inputs.prerelease && '--prerelease' || '' }}
+          fi
+          gh release view "$TAG" --json tagName,assets \
+            --jq '"\(.tagName): \(.assets[].name)"'
