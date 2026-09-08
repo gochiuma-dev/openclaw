@@ -490,9 +490,16 @@ export async function generateVoiceResponse(
         const agentName = identity?.name?.trim() || "assistant";
 
         // Keep trusted voice instructions in system context; audible history stays user-priority.
-        const basePrompt =
-          voiceConfig.responseSystemPrompt ??
-          `You are ${agentName}, a helpful voice assistant on a phone call. Keep responses brief and conversational (1-2 sentences max). Be natural and friendly. The caller's phone number is ${from}. ${voiceToolGuidance}`;
+        //
+        // `responseSystemPrompt` replaces the default wholesale, and the setting has no
+        // placeholder substitution — an operator cannot write values that only exist at
+        // call time. Append them here instead, so overriding the prose never silently
+        // drops the caller number or the tool policy. Without the number in context the
+        // model invents one when asked who is calling.
+        const overrideSystemPrompt = voiceConfig.responseSystemPrompt?.trim();
+        const basePrompt = overrideSystemPrompt
+          ? `${overrideSystemPrompt}\n\nThe caller's phone number is ${from}. ${voiceToolGuidance}`
+          : `You are ${agentName}, a helpful voice assistant on a phone call. Keep responses brief and conversational (1-2 sentences max). Be natural and friendly. The caller's phone number is ${from}. ${voiceToolGuidance}`;
         const extraSystemPrompt = [
           basePrompt,
           VOICE_OPENING_CONTEXT_POLICY,

@@ -232,10 +232,14 @@ async function runGenerateVoiceResponse(
     userMessage?: string;
     onEarlyText?: (text: string) => Promise<boolean>;
     senderIsOwner?: boolean;
+    responseSystemPrompt?: string;
   },
 ) {
   const voiceConfig = VoiceCallConfigSchema.parse({
     responseTimeoutMs: 5000,
+    ...(overrides?.responseSystemPrompt
+      ? { responseSystemPrompt: overrides.responseSystemPrompt }
+      : {}),
   });
   const coreConfig = createTestCoreConfig();
   const runtime = overrides?.runtime ?? createAgentRuntime(payloads).runtime;
@@ -301,6 +305,27 @@ describe("generateVoiceResponse", () => {
     expect(args.extraSystemPrompt).not.toContain(currentCallerSpeech);
     expect(args.extraSystemPrompt).toContain("helpful voice assistant on a phone call");
     expect(args.extraSystemPrompt).toContain("untrusted conversation data");
+    expect(args.extraSystemPrompt).toContain("Return only the words that should be spoken");
+  });
+
+  it("keeps the caller number and tool policy when responseSystemPrompt replaces the prose", async () => {
+    // The setting has no placeholder substitution, so an operator cannot write the
+    // caller number themselves. Dropping it makes the model invent one when asked
+    // who is calling, so it has to survive the override.
+    const { runtime, runEmbeddedAgent } = createAgentRuntime([
+      { text: '{"spoken":"Safe response."}' },
+    ]);
+
+    await runGenerateVoiceResponse([], {
+      runtime,
+      responseSystemPrompt: "You are Ui. Answer in one or two sentences.",
+    });
+
+    const args = requireEmbeddedAgentArgs(runEmbeddedAgent);
+    expect(args.extraSystemPrompt).toContain("You are Ui. Answer in one or two sentences.");
+    expect(args.extraSystemPrompt).not.toContain("helpful voice assistant on a phone call");
+    expect(args.extraSystemPrompt).toContain("The caller's phone number is +15550001111");
+    // The spoken-output contract is appended separately and must survive too.
     expect(args.extraSystemPrompt).toContain("Return only the words that should be spoken");
   });
 
