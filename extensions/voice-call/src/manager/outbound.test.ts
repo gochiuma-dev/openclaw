@@ -219,6 +219,67 @@ describe("voice-call outbound helpers", () => {
     expect(ctx.activeCalls.get(result.callId)?.agentId).toBe("operator");
   });
 
+  it("pins the call to the configured agent when pinConfiguredAgent is set", async () => {
+    // A chat agent asking for a call must not end up answering on it: the voice agent
+    // exists to keep calls on a local model with no tools. Intent travels via `message`.
+    const ctx = {
+      activeCalls: new Map(),
+      providerCallIdMap: new Map(),
+      provider: {
+        name: "twilio",
+        initiateCall: vi.fn(async () => ({ providerCallId: "provider-1" })),
+      },
+      config: {
+        agentId: "voice",
+        pinConfiguredAgent: true,
+        maxConcurrentCalls: 3,
+        outbound: { defaultMode: "conversation" },
+        fromNumber: "+14155550100",
+        sessionScope: "per-call",
+      },
+      storePath: "/tmp/voice-call.json",
+      webhookUrl: "https://example.com/webhook",
+    };
+
+    const result = await initiateCall(ctx as never, "+14155550123", undefined, {
+      agentId: "main",
+      message: "9 時の打ち合わせが動いたことだけ伝えて",
+    });
+
+    expect(result.success).toBe(true);
+    expect(ctx.activeCalls.get(result.callId)?.agentId).toBe("voice");
+    expect(ctx.activeCalls.get(result.callId)?.sessionKey).toBe(
+      `agent:voice:voice:call:${result.callId}`,
+    );
+  });
+
+  it("still lets the initiator own the call when pinConfiguredAgent is off", async () => {
+    const ctx = {
+      activeCalls: new Map(),
+      providerCallIdMap: new Map(),
+      provider: {
+        name: "twilio",
+        initiateCall: vi.fn(async () => ({ providerCallId: "provider-1" })),
+      },
+      config: {
+        agentId: "voice",
+        pinConfiguredAgent: false,
+        maxConcurrentCalls: 3,
+        outbound: { defaultMode: "conversation" },
+        fromNumber: "+14155550100",
+        sessionScope: "per-call",
+      },
+      storePath: "/tmp/voice-call.json",
+      webhookUrl: "https://example.com/webhook",
+    };
+
+    const result = await initiateCall(ctx as never, "+14155550123", undefined, {
+      agentId: "main",
+    });
+
+    expect(ctx.activeCalls.get(result.callId)?.agentId).toBe("main");
+  });
+
   it("uses the per-call agent for explicit session normalization", async () => {
     const ctx = {
       activeCalls: new Map(),

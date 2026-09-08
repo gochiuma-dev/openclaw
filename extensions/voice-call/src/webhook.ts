@@ -1154,6 +1154,7 @@ export class VoiceCallWebhookServer {
         from: call.from,
         senderIsOwner: call.direction === "inbound" ? false : undefined,
         agentId: resolveCallAgentId(call, effectiveConfig),
+        brief: normalizeOptionalString(call.metadata?.brief),
         transcript: call.transcript,
         userMessage,
         onEarlyText: speakResponse,

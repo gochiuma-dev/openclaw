@@ -322,4 +322,10 @@ export type OutboundCallOptions = {
   requesterSessionKey?: string;
   /** Agent selected for this call instead of the plugin default. */
   agentId?: string;
+  /**
+   * Background for whoever answers on this call. **Never spoken.**
+   * With `pinConfiguredAgent` the initiator no longer owns the call, so intent has to
+   * travel as data rather than as ownership.
+   */
+  brief?: string;
 };

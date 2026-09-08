@@ -525,6 +525,17 @@ export const VoiceCallConfigSchema = z
     /** Response/session owner. Required when multiple agents have no legacy owner. */
     agentId: z.string().min(1).optional(),
 
+    /**
+     * Pin every call to `agentId`, ignoring the agent that asked for it.
+     *
+     * By default an outbound call is owned by whoever initiated it, so a chat agent
+     * asking for a call also answers on it — with its own model, tools and prompt.
+     * That is the wrong shape when the voice agent exists precisely to keep calls on
+     * a local model with no tools: the caller's context arrives through the
+     * `message` argument instead, which is what it is for.
+     */
+    pinConfiguredAgent: z.boolean().default(false),
+
     /** Optional model override for generating voice responses. */
     responseModel: z.string().optional(),
 
