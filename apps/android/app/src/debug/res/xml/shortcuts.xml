@@ -5,7 +5,7 @@
    not a reference」で APK を弾く（2026-09-09 に実際に踏んだ）。
 
   manifestPlaceholders は AndroidManifest にしか展開されないので使えない。
-  source set で分けて、debug 側は src/debug/res/xml/shortcuts.xml が上書きする。
+  source set で分けて、これは debug 用。src/main/res/xml/shortcuts.xml を上書きする。
   **applicationId を変えたら両方直すこと。**
 -->
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android"
@@ -15,7 +15,7 @@
         app:queryPatterns="@array/ask_openclaw_query_patterns">
         <intent
             android:action="ai.openclaw.app.action.ASK_OPENCLAW"
-            android:targetPackage="ai.openclaw.app"
+            android:targetPackage="ai.openclaw.app.debug"
             android:targetClass="ai.openclaw.app.MainActivity">
             <parameter
                 android:name="prompt"
