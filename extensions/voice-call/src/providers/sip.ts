@@ -1,5 +1,6 @@
 // Voice Call plugin module implements SIP behavior via Asterisk AudioSocket.
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
 import net from "node:net";
 import type {
   GetCallStatusInput,
@@ -504,6 +505,19 @@ export class SipProvider implements VoiceCallProvider {
   private async transcribeUtterance(call: CallState, pcm: Buffer): Promise<void> {
     call.transcribing = true;
     try {
+      // Diagnosing a bad transcript means listening to what the relay actually got,
+      // not to what was supposedly sent: the audio crosses a codec, a transcode and
+      // AudioSocket framing before it lands here.
+      const dumpDir = process.env.VOICE_CALL_DUMP_DIR?.trim();
+      if (dumpDir) {
+        try {
+          const file = `${dumpDir}/${call.providerCallId}-${Date.now()}.wav`;
+          await fs.writeFile(file, wrapWav(pcm));
+          this.log(`utterance dumped to ${file} (${pcm.length} bytes)`);
+        } catch (error) {
+          this.warn(`utterance dump failed: ${String(error)}`);
+        }
+      }
       const text = await this.transcribe(pcm);
       if (!text) {
         return;
