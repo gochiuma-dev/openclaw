@@ -1,10 +1,11 @@
-# フォーク用の手動 APK ビルド。
+# フォーク用の手動 APK ビルドと配布。
 #
 # 上流の android-release.yml は Release Publish の承認済み run を要求するので、
 # フォークの手元ビルドには使えない。こちらは workflow_dispatch だけで動く。
 #
-# 署名は Android SDK の既定 debug 鍵。**公開の共通鍵なので配布用ではない。**
-# 自分の端末に入れて更新インストールできれば足りる、という前提。
+# 署名鍵と Firebase の資格情報は Secrets から読む。**どちらも無ければ
+# それぞれ debug 署名・配布なしに落ちる** ―― 鍵が無いだけでビルドが
+# 失敗しないようにしてある。
 name: Android Fork APK
 
 on:
@@ -23,6 +24,19 @@ on:
         required: false
         default: true
         type: boolean
+      distribute:
+        description: Firebase App Distribution へ配る
+        required: false
+        default: true
+        type: boolean
+      tester_groups:
+        description: 配布先のグループ名（カンマ区切り）。省略すると FIREBASE_TESTER_GROUPS
+        required: false
+        type: string
+      release_notes:
+        description: 配布時の説明。省略すると ref と commit を入れる
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -73,17 +87,58 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "ref=$(git rev-parse HEAD) tag=${tag}"
 
+      # 鍵は Secrets から。**無ければ debug 署名で続ける。**
+      # 鍵の有無でビルドが失敗しないようにしておく。
+      - name: 署名鍵を用意する
+        id: signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64}" ]; then
+            echo "variant=Debug" >> "$GITHUB_OUTPUT"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "署名鍵が無いので debug 署名でビルドする"
+            exit 0
+          fi
+          # runner の作業領域に置き、リポジトリの外に出す。
+          keystore="${RUNNER_TEMP}/release.keystore"
+          printf '%s' "${KEYSTORE_B64}" | base64 -d > "${keystore}"
+          chmod 600 "${keystore}"
+          {
+            echo "variant=Release"
+            echo "signed=true"
+            echo "keystore=${keystore}"
+          } >> "$GITHUB_OUTPUT"
+          echo "release 署名でビルドする"
+
       - name: APK をビルドする
         working-directory: apps/android
-        run: ./gradlew --no-daemon assembleDebug
+        env:
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          args=(--no-daemon "assemble${{ steps.signing.outputs.variant }}")
+          if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
+            # Gradle プロパティで渡す。コマンドラインには値を出さない。
+            args+=(
+              "-POPENCLAW_ANDROID_STORE_FILE=${{ steps.signing.outputs.keystore }}"
+              "-POPENCLAW_ANDROID_STORE_PASSWORD=${STORE_PASSWORD}"
+              "-POPENCLAW_ANDROID_KEY_ALIAS=${KEY_ALIAS}"
+              "-POPENCLAW_ANDROID_KEY_PASSWORD=${KEY_PASSWORD}"
+            )
+          fi
+          ./gradlew "${args[@]}"
 
-      # 出力名は build.gradle.kts が openclaw-<版>-debug.apk に決める。
-      # 版が変わっても拾えるよう、名前を決め打ちにせず探す。
+      # 出力名は build.gradle.kts が openclaw-<版>-<flavor>-<型>.apk に決める。
+      # 版や flavor が変わっても拾えるよう、名前を決め打ちにせず探す。
       - name: 生成物を確かめる
         id: apk
         run: |
           set -euo pipefail
-          path="$(find apps/android/app/build/outputs/apk -name '*.apk' -type f | head -1)"
+          path="$(find apps/android/app/build/outputs/apk -name '*.apk' -type f | sort | head -1)"
           [ -n "$path" ] || { echo "APK が見つかりません"; exit 1; }
           echo "path=${path}" >> "$GITHUB_OUTPUT"
           ls -l "$path"
@@ -102,8 +157,9 @@ jobs:
           APK: ${{ steps.apk.outputs.path }}
         run: |
           set -euo pipefail
-          notes="$(printf 'ref: %s\ncommit: %s\n\n**debug 署名。**Android SDK の既定鍵なので配布用ではない。' \
-            "${{ inputs.ref || github.ref_name }}" "$(git rev-parse HEAD)")"
+          notes="$(printf 'ref: %s\ncommit: %s\n署名: %s' \
+            "${{ inputs.ref || github.ref_name }}" "$(git rev-parse HEAD)" \
+            "${{ steps.signing.outputs.signed == 'true' && 'release' || 'debug（配布用ではない）' }}")"
           # 同じタグへ二度流したときは資産を差し替える（--clobber）。
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$APK" --clobber
@@ -114,3 +170,29 @@ jobs:
           fi
           gh release view "$TAG" --json tagName,assets \
             --jq '"\(.tagName): \(.assets[].name)"'
+
+      # 資格情報が無ければ黙って飛ばす。ビルドまでは成功として扱う。
+      - name: Firebase App Distribution へ配る
+        if: ${{ inputs.distribute }}
+        env:
+          CREDS: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          APP_ID: ${{ secrets.FIREBASE_ANDROID_APP_ID }}
+          GROUPS: ${{ inputs.tester_groups || secrets.FIREBASE_TESTER_GROUPS }}
+          APK: ${{ steps.apk.outputs.path }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CREDS}" ] || [ -z "${APP_ID}" ]; then
+            echo "FIREBASE_SERVICE_ACCOUNT か FIREBASE_ANDROID_APP_ID が未設定のため配布を飛ばす"
+            exit 0
+          fi
+          creds="${RUNNER_TEMP}/firebase-service-account.json"
+          printf '%s' "${CREDS}" > "${creds}"
+          chmod 600 "${creds}"
+          export GOOGLE_APPLICATION_CREDENTIALS="${creds}"
+          notes="${{ inputs.release_notes }}"
+          [ -n "$notes" ] || notes="$(printf 'ref: %s\ncommit: %s' \
+            "${{ inputs.ref || github.ref_name }}" "$(git rev-parse HEAD)")"
+          npm i -g firebase-tools@14
+          args=(appdistribution:distribute "${APK}" --app "${APP_ID}" --release-notes "${notes}")
+          [ -n "${GROUPS}" ] && args+=(--groups "${GROUPS}")
+          firebase "${args[@]}"
