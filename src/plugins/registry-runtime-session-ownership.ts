@@ -338,11 +338,22 @@ export function createPluginSessionOwnership(state: PluginRegistryState, pluginI
         if (!agentId || !storePath || !entry.sessionId) {
           return false;
         }
-        const canonicalSessionFile = resolveSessionFilePathCore(
-          entry.sessionId,
-          entry,
-          resolveSessionFilePathOptions({ agentId, storePath }),
-        );
+        let canonicalSessionFile: string;
+        try {
+          canonicalSessionFile = resolveSessionFilePathCore(
+            entry.sessionId,
+            entry,
+            resolveSessionFilePathOptions({ agentId, storePath }),
+          );
+        } catch {
+          // This walks every stored entry, not just the requested one. A single row
+          // whose sessionId is not filename-safe (a session *key* saved into the
+          // sessionId column, for instance) would otherwise throw here and fail an
+          // unrelated run. Skipping is also the correct answer: an id that cannot be
+          // resolved to a path cannot be the path being asked about, so no ownership
+          // check is bypassed for the requested session.
+          return false;
+        }
         return canonicalSessionFile === sessionFile;
       });
       if (canonicalSessionFileMatches.length > 0) {

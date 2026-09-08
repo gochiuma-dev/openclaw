@@ -132,6 +132,9 @@ describe("plugin registry runtime session ownership", () => {
     const lockedNoIdKey = "agent:main:locked-no-id";
     const lockedOrdinaryKey = "agent:main:ordinary-locked";
     const legacyPrefixedKey = "agent:main:harness:notes";
+    // A row whose sessionId holds a session *key* instead of a filename-safe id.
+    // Real stores grow these; one such row used to fail every unrelated voice call.
+    const malformedIdKey = "agent:main:voice:1001";
     const pluginOwnedKey = "agent:main:plugin-owned";
     const mixedOwnerKey = "agent:main:harness:codex:mixed-owner";
     const reservedEntry = {
@@ -146,6 +149,7 @@ describe("plugin registry runtime session ownership", () => {
       modelSelectionLocked: true as const,
     };
     const ordinaryEntry = { sessionId: "ordinary-session", updatedAt: 1 };
+    const malformedIdEntry = { sessionId: malformedIdKey, updatedAt: 1 };
     const ordinaryAliasEntry = { sessionId: reservedEntry.sessionId, updatedAt: 1 };
     const ordinaryNoIdEntry = { updatedAt: 1 };
     const lockedNoIdEntry = {
@@ -181,6 +185,7 @@ describe("plugin registry runtime session ownership", () => {
       [ordinaryKey]: ordinaryEntry,
       [lockedOrdinaryKey]: lockedOrdinaryEntry,
       [legacyPrefixedKey]: legacyPrefixedEntry,
+      [malformedIdKey]: malformedIdEntry,
     };
     const typedEntries = entries as unknown as Record<string, SessionEntry>;
     const subagent = {
@@ -371,6 +376,8 @@ describe("plugin registry runtime session ownership", () => {
         sessionFile: ordinaryAliasKey,
       } as never),
     ).rejects.toThrow('owned by plugin "codex-owner"');
+    // The canonical-file scan walks every stored entry. `malformedIdEntry` cannot be
+    // resolved to a path, and must be skipped rather than throwing for this session.
     await expect(
       otherApi.runtime.agent.runEmbeddedAgent({
         ...runParams,
