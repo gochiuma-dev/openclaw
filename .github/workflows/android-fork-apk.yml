@@ -46,6 +46,18 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # Gradle の :app:generateMermaidAssets が pnpm を呼ぶ。
+      # Node と pnpm が無いと `A problem occurred starting process 'command 'pnpm''`
+      # でビルドが落ちる（実際に落ちた）。
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.19.0"
+
+      - uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: off
+          node-version: "24.19.0"
+
       - uses: gradle/actions/setup-gradle@v5
 
       - name: ビルドする対象を記録する
