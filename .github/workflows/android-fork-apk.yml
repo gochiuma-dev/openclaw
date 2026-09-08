@@ -30,8 +30,9 @@ on:
         default: true
         type: boolean
       tester_groups:
-        description: 配布先のグループ名（カンマ区切り）。省略すると FIREBASE_TESTER_GROUPS
+        description: 配布先のグループ名（カンマ区切り）
         required: false
+        default: me
         type: string
       release_notes:
         description: 配布時の説明。省略すると ref と commit を入れる
@@ -198,7 +199,9 @@ jobs:
         env:
           CREDS: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           APP_ID: ${{ secrets.FIREBASE_ANDROID_APP_ID }}
-          GROUPS: ${{ inputs.tester_groups || secrets.FIREBASE_TESTER_GROUPS }}
+          # 既定は me。指定が無いまま配ると誰にも届かない
+          # （`no testers or groups specified, skipping` で黙って終わる）。
+          GROUPS: ${{ inputs.tester_groups || 'me' }}
           APK: ${{ steps.apk.outputs.path }}
         run: |
           set -euo pipefail
@@ -214,6 +217,6 @@ jobs:
           [ -n "$notes" ] || notes="$(printf 'ref: %s\ncommit: %s' \
             "${{ inputs.ref || github.ref_name }}" "$(git rev-parse HEAD)")"
           npm i -g firebase-tools@14
-          args=(appdistribution:distribute "${APK}" --app "${APP_ID}" --release-notes "${notes}")
-          [ -n "${GROUPS}" ] && args+=(--groups "${GROUPS}")
-          firebase "${args[@]}"
+          [ -n "${GROUPS}" ] || { echo "配布先グループが空です"; exit 1; }
+          firebase appdistribution:distribute "${APK}" \
+            --app "${APP_ID}" --release-notes "${notes}" --groups "${GROUPS}"
