@@ -231,6 +231,7 @@ async function runGenerateVoiceResponse(
     onEarlyText?: (text: string) => Promise<boolean>;
     senderIsOwner?: boolean;
     responseSystemPrompt?: string;
+    brief?: string;
   },
 ) {
   const voiceConfig = VoiceCallConfigSchema.parse({
@@ -250,6 +251,7 @@ async function runGenerateVoiceResponse(
     callId: "call-123",
     from: "+15550001111",
     senderIsOwner: overrides?.senderIsOwner,
+    ...(overrides?.brief ? { brief: overrides.brief } : {}),
     transcript: overrides?.transcript ?? [{ speaker: "user", text: userMessage }],
     userMessage,
     onEarlyText: overrides?.onEarlyText,
@@ -304,6 +306,35 @@ describe("generateVoiceResponse", () => {
     expect(args.extraSystemPrompt).toContain("helpful voice assistant on a phone call");
     expect(args.extraSystemPrompt).toContain("untrusted conversation data");
     expect(args.extraSystemPrompt).toContain("Return only the words that should be spoken");
+  });
+
+  it("carries the initiator's brief in system context, never as audible speech", async () => {
+    // With `pinConfiguredAgent` the agent that asked for the call does not answer on it,
+    // so why it was placed has to travel as data. It is not caller speech: it comes from
+    // another agent, so it belongs in system context rather than the user turn.
+    const { runtime, runEmbeddedAgent } = createAgentRuntime([
+      { text: '{"spoken":"Safe response."}' },
+    ]);
+    const brief = "9 時の打ち合わせが 10 時に動いたことだけ伝える";
+
+    await runGenerateVoiceResponse([], { runtime, brief });
+
+    const args = requireEmbeddedAgentArgs(runEmbeddedAgent);
+    expect(args.extraSystemPrompt).toContain("Why this call was placed:");
+    expect(args.extraSystemPrompt).toContain(brief);
+    expect(args.prompt).not.toContain(brief);
+  });
+
+  it("omits the brief section when no brief was given", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime([
+      { text: '{"spoken":"Safe response."}' },
+    ]);
+
+    await runGenerateVoiceResponse([], { runtime });
+
+    expect(requireEmbeddedAgentArgs(runEmbeddedAgent).extraSystemPrompt).not.toContain(
+      "Why this call was placed:",
+    );
   });
 
   it("keeps the caller number and tool policy when responseSystemPrompt replaces the prose", async () => {

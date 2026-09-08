@@ -49,7 +49,13 @@ const VoiceCallToolSchema = Type.Union([
   Type.Object({
     action: Type.Literal("initiate_call"),
     to: Type.Optional(Type.String({ description: "Call target" })),
-    message: Type.String({ description: "Intro message" }),
+    message: Type.String({ description: "Intro message. Spoken to the callee verbatim." }),
+    brief: Type.Optional(
+      Type.String({
+        description:
+          "Background for the agent taking the call. Never spoken. Use it to hand over why you are calling and anything the callee may ask about.",
+      }),
+    ),
     mode: Type.Optional(Type.Union([Type.Literal("notify"), Type.Literal("conversation")])),
     sessionKey: Type.Optional(Type.String({ description: "OpenClaw session key for the call" })),
     dtmfSequence: Type.Optional(Type.String({ description: "DTMF digits to play before connect" })),
@@ -472,6 +478,7 @@ export default definePluginEntry({
                   await commands.initiate({
                     to: normalizeOptionalString(rawParams.to),
                     message,
+                    brief: normalizeOptionalString(rawParams.brief),
                     dtmfSequence: normalizeOptionalString(rawParams.dtmfSequence),
                     mode:
                       rawParams.mode === "notify" || rawParams.mode === "conversation"

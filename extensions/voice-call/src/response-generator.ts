@@ -42,6 +42,8 @@ type VoiceResponseParams = {
   senderIsOwner: boolean | undefined;
   /** Agent frozen on the call record. */
   agentId?: string;
+  /** Background from the agent that placed the call. Never spoken. */
+  brief?: string;
   /** Audible call transcript, used only for bounded first-turn opening context. */
   transcript: Array<{ speaker: "user" | "bot"; text: string }>;
   /** Latest user message */
@@ -491,8 +493,12 @@ export async function generateVoiceResponse(
         const basePrompt = overrideSystemPrompt
           ? `${overrideSystemPrompt}\n\nThe caller's phone number is ${from}. ${voiceToolGuidance}`
           : `You are ${agentName}, a helpful voice assistant on a phone call. Keep responses brief and conversational (1-2 sentences max). Be natural and friendly. The caller's phone number is ${from}. ${voiceToolGuidance}`;
+        // The brief comes from the agent that asked for the call, not from the caller,
+        // so it belongs in system context. Audible speech stays user-priority.
+        const briefText = params.brief?.trim();
         const extraSystemPrompt = [
           basePrompt,
+          ...(briefText ? [`Why this call was placed:\n${briefText}`] : []),
           VOICE_OPENING_CONTEXT_POLICY,
           VOICE_SPOKEN_OUTPUT_CONTRACT,
         ].join("\n\n");

@@ -100,6 +100,8 @@ export function createVoiceCallCommandService(ensureRuntime: () => Promise<Voice
         dtmfSequence?: string;
         requesterSessionKey?: string;
         agentId?: string;
+        /** Background for whoever answers. Never spoken. */
+        brief?: string;
       },
       missingToMessage = "to required",
     ) {
@@ -109,6 +111,7 @@ export function createVoiceCallCommandService(ensureRuntime: () => Promise<Voice
         message: params.message,
         mode: params.mode,
         dtmfSequence: params.dtmfSequence,
+        ...(params.brief ? { brief: params.brief } : {}),
         ...(params.requesterSessionKey ? { requesterSessionKey: params.requesterSessionKey } : {}),
         ...(params.agentId ? { agentId: params.agentId } : {}),
       });
