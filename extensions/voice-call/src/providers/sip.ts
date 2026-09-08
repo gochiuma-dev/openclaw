@@ -65,6 +65,10 @@ export type SipProviderOptions = {
     username: string;
     password: string;
     endpoint: string;
+    /** Channel for extensions. Different technology, so the number alone cannot pick it. */
+    extensionEndpoint: string;
+    /** Targets matching this are extensions, not phone numbers. */
+    extensionPattern: string;
     context: string;
     extension: string;
     timeoutSeconds: number;
@@ -236,10 +240,19 @@ export class SipProvider implements VoiceCallProvider {
       throw new Error("SIP provider needs sip.ari configured to place outbound calls");
     }
     const uuid = crypto.randomUUID();
-    const number = normalizeDomesticNumber(input.to);
+
+    // An extension and an outside number are not the same dial: they leave on
+    // different channel technologies. Passing an extension to the LTE endpoint would
+    // place a real outside call, so the target decides which endpoint is used before
+    // any normalisation happens — extensions are not phone numbers and must not be
+    // folded to the domestic form.
+    const target = input.to.trim();
+    const isExtension = new RegExp(ari.extensionPattern).test(target);
+    const number = isExtension ? target : normalizeDomesticNumber(input.to);
     if (!number) {
       throw new Error(`SIP provider cannot dial ${input.to}`);
     }
+    const endpointTemplate = isExtension ? ari.extensionEndpoint : ari.endpoint;
 
     // Register before originating: the channel can reach AudioSocket before
     // the HTTP response is read, and an unknown UUID is dropped.
@@ -247,7 +260,7 @@ export class SipProvider implements VoiceCallProvider {
     this.pending.set(uuid, { from: input.from, to: input.to, at: Date.now() });
 
     const body = {
-      endpoint: ari.endpoint.replace("{number}", number),
+      endpoint: endpointTemplate.replace("{number}", number),
       context: ari.context,
       extension: ari.extension,
       priority: 1,
@@ -273,7 +286,9 @@ export class SipProvider implements VoiceCallProvider {
       const detail = await res.text().catch(() => "");
       throw new Error(`ARI originate rejected (${res.status}): ${detail.slice(0, 200)}`);
     }
-    this.log(`outbound originate ${number} uuid=${uuid}`);
+    this.log(
+      `outbound originate ${number} (${isExtension ? "extension" : "external"}) uuid=${uuid}`,
+    );
     return { providerCallId: uuid, status: "initiated" };
   }
 

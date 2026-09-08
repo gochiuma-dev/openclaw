@@ -495,6 +495,15 @@ export const VoiceCallConfigSchema = z
             password: z.string().min(1),
             /** 発信チャネル。{number} を宛先で置換する */
             endpoint: z.string().min(1).default("Quectel/quectel0/{number}"),
+            /**
+             * 内線用の発信チャネル。`extensionPattern` に一致する宛先はこちらを使う。
+             *
+             * 既定の endpoint は LTE のトランクなので、内線番号を渡すと外線へ出て
+             * しまう。**技術（PJSIP / Quectel）が違うので、番号だけでは切り替わらない。**
+             */
+            extensionEndpoint: z.string().min(1).default("PJSIP/{number}"),
+            /** 内線と見なす宛先。既定は 3〜4 桁の数字 */
+            extensionPattern: z.string().min(1).default("^\\d{3,4}$"),
             /** 応答後の着地点 */
             context: z.string().min(1).default("openclaw-outbound"),
             extension: z.string().min(1).default("701"),

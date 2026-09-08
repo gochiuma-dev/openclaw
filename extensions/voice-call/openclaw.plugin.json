@@ -392,6 +392,18 @@
               "endpoint": {
                 "type": "string"
               },
+              "extensionEndpoint": {
+                "type": "string",
+                "minLength": 1,
+                "default": "PJSIP/{number}",
+                "description": "Channel for targets matching extensionPattern. The default endpoint is the outside trunk, so an extension sent there would place a real outside call."
+              },
+              "extensionPattern": {
+                "type": "string",
+                "minLength": 1,
+                "default": "^\\d{3,4}$",
+                "description": "Targets matching this are dialled as extensions and are not normalised to a domestic phone number."
+              },
               "context": {
                 "type": "string"
               },
