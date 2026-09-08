@@ -1106,6 +1106,11 @@
         "type": "string",
         "minLength": 1
       },
+      "pinConfiguredAgent": {
+        "type": "boolean",
+        "default": false,
+        "description": "Pin every call to agentId, ignoring the agent that asked for it. The initiator hands over intent through the initiate_call `brief` argument instead."
+      },
       "sessionScope": {
         "type": "string",
         "enum": [
