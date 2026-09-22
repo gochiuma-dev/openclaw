@@ -189,7 +189,6 @@ export class VoiceCallWebhookServer {
   private provider: VoiceCallProvider;
   private coreConfig: OpenClawConfig | null;
   private fullConfig: OpenClawConfig | null;
-  private getCurrentConfig: (() => OpenClawConfig) | undefined;
   private agentRuntime: OpenClawPluginApi["runtime"]["agent"] | null;
   private logger: Logger;
   private stopStaleCallReaper: (() => void) | null = null;
@@ -211,14 +210,12 @@ export class VoiceCallWebhookServer {
     fullConfig?: OpenClawConfig,
     agentRuntime?: OpenClawPluginApi["runtime"]["agent"],
     logger?: Logger,
-    getCurrentConfig?: () => OpenClawConfig,
   ) {
     this.config = normalizeVoiceCallConfig(config);
     this.manager = manager;
     this.provider = provider;
     this.coreConfig = coreConfig ?? null;
     this.fullConfig = fullConfig ?? null;
-    this.getCurrentConfig = getCurrentConfig;
     this.agentRuntime = agentRuntime ?? null;
     this.logger = logger ?? {
       info: console.log,
@@ -1012,28 +1009,6 @@ export class VoiceCallWebhookServer {
     }
   }
 
-  /**
-   * Push provider events that never arrive over HTTP.
-   *
-   * Cloud telephony providers post webhooks, so the parsed-event path is the
-   * only ingress they need. The SIP provider owns a socket instead: Asterisk
-   * hands it media directly, and there is no request to parse. Without this
-   * entry point a socket-driven provider cannot reach the manager at all.
-   */
-  ingestEvents(events: NormalizedEvent[]): void {
-    try {
-      this.processParsedEvents(events);
-    } catch (err) {
-      // The HTTP ingress contains a failed event in handleRequest's catch and
-      // answers the provider with an error. A socket sink has no such boundary:
-      // an event that fails closed here would surface inside the provider's
-      // socket callback and end the gateway process mid-call. The event stays
-      // failed - nothing is published and no call is dialed - but the process
-      // and every other active call survive it.
-      this.logger.error(`Failed to ingest provider events: ${String(err)}`);
-    }
-  }
-
   private processParsedEvents(events: NormalizedEvent[]): boolean {
     let replayable = false;
     for (const event of events) {
@@ -1120,21 +1095,8 @@ export class VoiceCallWebhookServer {
         return false;
       }
       this.logger.info(`AI response queued ${callId} chars=${text.length}`);
-      // manager.speak() resolves after playback. Do not await it here: the
-      // SIP provider starts TTS synthesis immediately and serializes only the
-      // actual audio playback, allowing the next sentence to synthesize while
-      // this one is being streamed.
-      void this.manager
-        .speak(callId, text, { listenAfterPlayback: true })
-        .then((result) => {
-          if (!result.success) {
-            this.logger.warn(`AI response playback failed ${callId}: ${result.error ?? "unknown"}`);
-          }
-        })
-        .catch((error: unknown) => {
-          this.logger.warn(`AI response playback failed ${callId}: ${String(error)}`);
-        });
-      return true;
+      const result = await this.manager.speak(callId, text, { listenAfterPlayback: true });
+      return result.success;
     };
     try {
       const { generateVoiceResponse } = await loadResponseGeneratorModule();
@@ -1144,17 +1106,15 @@ export class VoiceCallWebhookServer {
       const numberRouteKey = resolveVoiceCallNumberRouteKeyForCall(call);
       const effectiveConfig = resolveVoiceCallEffectiveConfig(this.config, numberRouteKey).config;
 
-      const currentConfig = this.getCurrentConfig?.() ?? this.coreConfig;
       const result = await generateVoiceResponse({
         voiceConfig: effectiveConfig,
-        coreConfig: currentConfig,
+        coreConfig: this.coreConfig,
         agentRuntime: this.agentRuntime,
         callId,
         sessionKey: call.sessionKey,
         from: call.from,
         senderIsOwner: call.direction === "inbound" ? false : undefined,
         agentId: resolveCallAgentId(call, effectiveConfig),
-        brief: normalizeOptionalString(call.metadata?.brief),
         transcript: call.transcript,
         userMessage,
         onEarlyText: speakResponse,

@@ -6,8 +6,7 @@ import type { CallMode } from "./config.js";
 // Provider Identifiers
 // -----------------------------------------------------------------------------
 
-// "sip" は Asterisk 経由。他はクラウド電話。
-const ProviderNameSchema = z.enum(["telnyx", "twilio", "plivo", "mock", "sip"]);
+const ProviderNameSchema = z.enum(["telnyx", "twilio", "plivo", "mock"]);
 export type ProviderName = z.infer<typeof ProviderNameSchema>;
 
 // -----------------------------------------------------------------------------
@@ -259,10 +258,4 @@ export type OutboundCallOptions = {
   requesterSessionKey?: string;
   /** Agent selected for this call instead of the plugin default. */
   agentId?: string;
-  /**
-   * Background for whoever answers on this call. **Never spoken.**
-   * With `pinConfiguredAgent` the initiator no longer owns the call, so intent has to
-   * travel as data rather than as ownership.
-   */
-  brief?: string;
 };

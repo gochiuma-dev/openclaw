@@ -13,24 +13,14 @@
       "hasSubcommands": true
     }
   ],
-  "skills": [
-    "./skills"
-  ],
-  "commandAliases": [
-    {
-      "name": "voicecall"
-    }
-  ],
+  "skills": ["./skills"],
+  "commandAliases": [{ "name": "voicecall" }],
   "activation": {
     "onStartup": true,
-    "onCommands": [
-      "voicecall"
-    ]
+    "onCommands": ["voicecall"]
   },
   "contracts": {
-    "tools": [
-      "voice_call"
-    ]
+    "tools": ["voice_call"]
   },
   "uiHints": {
     "provider": {
@@ -282,13 +272,7 @@
       },
       "provider": {
         "type": "string",
-        "enum": [
-          "telnyx",
-          "twilio",
-          "plivo",
-          "mock",
-          "sip"
-        ]
+        "enum": ["telnyx", "twilio", "plivo", "mock"]
       },
       "telnyx": {
         "type": "object",
@@ -313,18 +297,11 @@
             "type": "string"
           },
           "authToken": {
-            "type": [
-              "string",
-              "object"
-            ]
+            "type": ["string", "object"]
           },
           "region": {
             "type": "string",
-            "enum": [
-              "us1",
-              "ie1",
-              "au1"
-            ]
+            "enum": ["us1", "ie1", "au1"]
           }
         }
       },
@@ -340,88 +317,6 @@
           }
         }
       },
-      "sip": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "bind": {
-            "type": "string"
-          },
-          "port": {
-            "type": "integer"
-          },
-          "relayUrl": {
-            "type": "string"
-          },
-          "relayUser": {
-            "type": "string"
-          },
-          "relayPassword": {
-            "type": "string"
-          },
-          "silenceMs": {
-            "type": "integer"
-          },
-          "silenceRms": {
-            "type": "integer"
-          },
-          "minSpeechMs": {
-            "type": "integer"
-          },
-          "maxUtteranceMs": {
-            "type": "integer"
-          },
-          "ari": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "baseUrl",
-              "username",
-              "password"
-            ],
-            "properties": {
-              "baseUrl": {
-                "type": "string"
-              },
-              "username": {
-                "type": "string"
-              },
-              "password": {
-                "type": "string"
-              },
-              "endpoint": {
-                "type": "string"
-              },
-              "extensionEndpoint": {
-                "type": "string",
-                "minLength": 1,
-                "default": "PJSIP/{number}",
-                "description": "Channel for targets matching extensionPattern. The default endpoint is the outside trunk, so an extension sent there would place a real outside call."
-              },
-              "extensionPattern": {
-                "type": "string",
-                "minLength": 1,
-                "default": "^\\d{3,4}$",
-                "description": "Targets matching this are dialled as extensions and are not normalised to a domestic phone number."
-              },
-              "context": {
-                "type": "string"
-              },
-              "extension": {
-                "type": "string"
-              },
-              "timeoutSeconds": {
-                "type": "integer",
-                "minimum": 5,
-                "maximum": 120
-              },
-              "callerId": {
-                "type": "string"
-              }
-            }
-          }
-        }
-      },
       "fromNumber": {
         "type": "string",
         "pattern": "^\\+[1-9]\\d{1,14}$"
@@ -432,12 +327,7 @@
       },
       "inboundPolicy": {
         "type": "string",
-        "enum": [
-          "disabled",
-          "allowlist",
-          "pairing",
-          "open"
-        ]
+        "enum": ["disabled", "allowlist", "pairing", "open"]
       },
       "allowFrom": {
         "type": "array",
@@ -487,10 +377,7 @@
         "properties": {
           "defaultMode": {
             "type": "string",
-            "enum": [
-              "notify",
-              "conversation"
-            ]
+            "enum": ["notify", "conversation"]
           },
           "notifyHangupDelaySec": {
             "type": "integer",
@@ -544,11 +431,7 @@
         "properties": {
           "mode": {
             "type": "string",
-            "enum": [
-              "off",
-              "serve",
-              "funnel"
-            ]
+            "enum": ["off", "serve", "funnel"]
           },
           "port": {
             "type": "integer",
@@ -567,12 +450,7 @@
         "properties": {
           "provider": {
             "type": "string",
-            "enum": [
-              "none",
-              "ngrok",
-              "tailscale-serve",
-              "tailscale-funnel"
-            ]
+            "enum": ["none", "ngrok", "tailscale-serve", "tailscale-funnel"]
           },
           "ngrokAuthToken": {
             "type": "string"
@@ -662,33 +540,15 @@
           },
           "toolPolicy": {
             "type": "string",
-            "enum": [
-              "safe-read-only",
-              "owner",
-              "none"
-            ]
+            "enum": ["safe-read-only", "owner", "none"]
           },
           "consultPolicy": {
             "type": "string",
-            "enum": [
-              "auto",
-              "substantive",
-              "always"
-            ]
+            "enum": ["auto", "substantive", "always"]
           },
           "consultThinkingLevel": {
             "type": "string",
-            "enum": [
-              "off",
-              "minimal",
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "adaptive",
-              "max",
-              "ultra"
-            ]
+            "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"]
           },
           "consultFastMode": {
             "type": "boolean"
@@ -701,9 +561,7 @@
               "properties": {
                 "type": {
                   "type": "string",
-                  "enum": [
-                    "function"
-                  ]
+                  "enum": ["function"]
                 },
                 "name": {
                   "type": "string"
@@ -717,9 +575,7 @@
                   "properties": {
                     "type": {
                       "type": "string",
-                      "enum": [
-                        "object"
-                      ]
+                      "enum": ["object"]
                     },
                     "properties": {
                       "type": "object",
@@ -732,18 +588,10 @@
                       }
                     }
                   },
-                  "required": [
-                    "type",
-                    "properties"
-                  ]
+                  "required": ["type", "properties"]
                 }
               },
-              "required": [
-                "type",
-                "name",
-                "description",
-                "parameters"
-              ]
+              "required": ["type", "name", "description", "parameters"]
             }
           },
           "fastContext": {
@@ -766,10 +614,7 @@
                 "minItems": 1,
                 "items": {
                   "type": "string",
-                  "enum": [
-                    "memory",
-                    "sessions"
-                  ]
+                  "enum": ["memory", "sessions"]
                 }
               },
               "fallbackToConsult": {
@@ -824,22 +669,14 @@
         "properties": {
           "auto": {
             "type": "string",
-            "enum": [
-              "off",
-              "always",
-              "inbound",
-              "tagged"
-            ]
+            "enum": ["off", "always", "inbound", "tagged"]
           },
           "enabled": {
             "type": "boolean"
           },
           "mode": {
             "type": "string",
-            "enum": [
-              "final",
-              "all"
-            ]
+            "enum": ["final", "all"]
           },
           "provider": {
             "type": "string"
@@ -885,10 +722,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "apiKey": {
-                    "type": [
-                      "string",
-                      "object"
-                    ]
+                    "type": ["string", "object"]
                   },
                   "baseUrl": {
                     "type": "string"
@@ -922,10 +756,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "apiKey": {
-                    "type": [
-                      "string",
-                      "object"
-                    ]
+                    "type": ["string", "object"]
                   },
                   "baseUrl": {
                     "type": "string"
@@ -951,11 +782,7 @@
                   },
                   "applyTextNormalization": {
                     "type": "string",
-                    "enum": [
-                      "auto",
-                      "on",
-                      "off"
-                    ]
+                    "enum": ["auto", "on", "off"]
                   },
                   "languageCode": {
                     "type": "string"
@@ -1088,10 +915,7 @@
               "type": "object",
               "properties": {
                 "apiKey": {
-                  "type": [
-                    "string",
-                    "object"
-                  ]
+                  "type": ["string", "object"]
                 }
               },
               "additionalProperties": true
@@ -1118,18 +942,9 @@
         "type": "string",
         "minLength": 1
       },
-      "pinConfiguredAgent": {
-        "type": "boolean",
-        "default": false,
-        "description": "Pin every call to agentId, ignoring the agent that asked for it. The initiator hands over intent through the initiate_call `brief` argument instead."
-      },
       "sessionScope": {
         "type": "string",
-        "enum": [
-          "per-phone",
-          "per-call",
-          "main"
-        ]
+        "enum": ["per-phone", "per-call", "main"]
       },
       "responseModel": {
         "type": "string"
@@ -1144,27 +959,13 @@
     }
   },
   "configContracts": {
-    "compatibilityMigrationPaths": [
-      "plugins.entries.voice-call.config"
-    ],
+    "compatibilityMigrationPaths": ["plugins.entries.voice-call.config"],
     "secretInputs": {
       "paths": [
-        {
-          "path": "twilio.authToken",
-          "expected": "string"
-        },
-        {
-          "path": "realtime.providers.*.apiKey",
-          "expected": "string"
-        },
-        {
-          "path": "streaming.providers.*.apiKey",
-          "expected": "string"
-        },
-        {
-          "path": "tts.providers.*.apiKey",
-          "expected": "string"
-        }
+        { "path": "twilio.authToken", "expected": "string" },
+        { "path": "realtime.providers.*.apiKey", "expected": "string" },
+        { "path": "streaming.providers.*.apiKey", "expected": "string" },
+        { "path": "tts.providers.*.apiKey", "expected": "string" }
       ]
     }
   }

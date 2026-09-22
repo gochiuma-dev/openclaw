@@ -52,16 +52,10 @@ type EmbeddedAgentArgs = {
   senderIsOwner?: boolean;
   toolsAllow?: string[];
   blockReplyBreak?: "text_end" | "message_end";
-  blockReplyChunking?: {
-    minChars: number;
-    maxChars: number;
-    breakPreference?: "paragraph" | "newline" | "sentence";
-  };
   onBlockReply?: (
     payload: Record<string, unknown>,
     context?: { assistantMessageIndex?: number },
   ) => void;
-  onPartialReply?: (payload: { text?: string }) => void | Promise<void>;
   onBlockReplyFlush?: (
     context:
       | { reason: "message_end" | "terminal" }
@@ -72,10 +66,7 @@ type EmbeddedAgentArgs = {
 
 function createAgentRuntime(
   payloads: Array<Record<string, unknown>>,
-  options?: {
-    blockReplyPayloads?: Array<Record<string, unknown>>;
-    partialReplyPayloads?: Array<{ text?: string }>;
-  },
+  options?: { blockReplyPayloads?: Array<Record<string, unknown>> },
 ) {
   const sessionStore: Record<string, TestSessionEntry> = {};
   const saveSessionStore = vi.fn(async () => {});
@@ -113,9 +104,6 @@ function createAgentRuntime(
     },
   );
   const runEmbeddedAgent = vi.fn(async (args: EmbeddedAgentArgs) => {
-    for (const payload of options?.partialReplyPayloads ?? []) {
-      await args.onPartialReply?.(payload);
-    }
     for (const payload of options?.blockReplyPayloads ?? []) {
       args.onBlockReply?.(payload, { assistantMessageIndex: 0 });
     }
@@ -203,27 +191,6 @@ function requireEmbeddedAgentArgs(runEmbeddedAgent: ReturnType<typeof vi.fn>) {
   return args as EmbeddedAgentArgs;
 }
 
-function requireFirstMockCall(calls: readonly unknown[][], label: string): unknown[] {
-  const call = calls.at(0);
-  if (!call) {
-    throw new Error(`expected ${label} call`);
-  }
-  return call;
-}
-
-function createTestCoreConfig(): OpenClawConfig {
-  const model = "together/Qwen/Qwen2.5-7B-Instruct-Turbo";
-  return {
-    agents: {
-      defaults: { model: { primary: model } },
-      entries: {
-        main: { model: { primary: model } },
-        voice: { model: { primary: "claude-cli/claude-sonnet-5" } },
-      },
-    },
-  } as OpenClawConfig;
-}
-
 async function runGenerateVoiceResponse(
   payloads: Array<Record<string, unknown>>,
   overrides?: {
@@ -232,17 +199,12 @@ async function runGenerateVoiceResponse(
     userMessage?: string;
     onEarlyText?: (text: string) => Promise<boolean>;
     senderIsOwner?: boolean;
-    responseSystemPrompt?: string;
-    brief?: string;
   },
 ) {
   const voiceConfig = VoiceCallConfigSchema.parse({
     responseTimeoutMs: 5000,
-    ...(overrides?.responseSystemPrompt
-      ? { responseSystemPrompt: overrides.responseSystemPrompt }
-      : {}),
   });
-  const coreConfig = createTestCoreConfig();
+  const coreConfig = {} as OpenClawConfig;
   const runtime = overrides?.runtime ?? createAgentRuntime(payloads).runtime;
   const userMessage = overrides?.userMessage ?? "hello there";
 
@@ -253,7 +215,6 @@ async function runGenerateVoiceResponse(
     callId: "call-123",
     from: "+15550001111",
     senderIsOwner: overrides?.senderIsOwner,
-    ...(overrides?.brief ? { brief: overrides.brief } : {}),
     transcript: overrides?.transcript ?? [{ speaker: "user", text: userMessage }],
     userMessage,
     onEarlyText: overrides?.onEarlyText,
@@ -307,57 +268,7 @@ describe("generateVoiceResponse", () => {
     expect(args.extraSystemPrompt).not.toContain(currentCallerSpeech);
     expect(args.extraSystemPrompt).toContain("helpful voice assistant on a phone call");
     expect(args.extraSystemPrompt).toContain("untrusted conversation data");
-    expect(args.extraSystemPrompt).toContain("Return only the words that should be spoken");
-  });
-
-  it("carries the initiator's brief in system context, never as audible speech", async () => {
-    // With `pinConfiguredAgent` the agent that asked for the call does not answer on it,
-    // so why it was placed has to travel as data. It is not caller speech: it comes from
-    // another agent, so it belongs in system context rather than the user turn.
-    const { runtime, runEmbeddedAgent } = createAgentRuntime([
-      { text: '{"spoken":"Safe response."}' },
-    ]);
-    const brief = "9 時の打ち合わせが 10 時に動いたことだけ伝える";
-
-    await runGenerateVoiceResponse([], { runtime, brief });
-
-    const args = requireEmbeddedAgentArgs(runEmbeddedAgent);
-    expect(args.extraSystemPrompt).toContain("Why this call was placed:");
-    expect(args.extraSystemPrompt).toContain(brief);
-    expect(args.prompt).not.toContain(brief);
-  });
-
-  it("omits the brief section when no brief was given", async () => {
-    const { runtime, runEmbeddedAgent } = createAgentRuntime([
-      { text: '{"spoken":"Safe response."}' },
-    ]);
-
-    await runGenerateVoiceResponse([], { runtime });
-
-    expect(requireEmbeddedAgentArgs(runEmbeddedAgent).extraSystemPrompt).not.toContain(
-      "Why this call was placed:",
-    );
-  });
-
-  it("keeps the caller number and tool policy when responseSystemPrompt replaces the prose", async () => {
-    // The setting has no placeholder substitution, so an operator cannot write the
-    // caller number themselves. Dropping it makes the model invent one when asked
-    // who is calling, so it has to survive the override.
-    const { runtime, runEmbeddedAgent } = createAgentRuntime([
-      { text: '{"spoken":"Safe response."}' },
-    ]);
-
-    await runGenerateVoiceResponse([], {
-      runtime,
-      responseSystemPrompt: "You are Ui. Answer in one or two sentences.",
-    });
-
-    const args = requireEmbeddedAgentArgs(runEmbeddedAgent);
-    expect(args.extraSystemPrompt).toContain("You are Ui. Answer in one or two sentences.");
-    expect(args.extraSystemPrompt).not.toContain("helpful voice assistant on a phone call");
-    expect(args.extraSystemPrompt).toContain("The caller's phone number is +15550001111");
-    // The spoken-output contract is appended separately and must survive too.
-    expect(args.extraSystemPrompt).toContain("Return only the words that should be spoken");
+    expect(args.extraSystemPrompt).toContain("Return only valid JSON in this exact shape");
   });
 
   it("does not replay cumulative call history after the first caller turn", async () => {
@@ -417,7 +328,7 @@ describe("generateVoiceResponse", () => {
     expect(result.text).toBe("Hello from JSON.");
     expect(runEmbeddedAgent).toHaveBeenCalledTimes(1);
     const args = requireEmbeddedAgentArgs(runEmbeddedAgent);
-    expect(args.extraSystemPrompt).toContain("do not return JSON");
+    expect(args.extraSystemPrompt).toContain('{"spoken":"..."}');
     expect(args.provider).toBe("together");
     expect(args.model).toBe("Qwen/Qwen2.5-7B-Instruct-Turbo");
     expect(args.abortSignal).toBeInstanceOf(AbortSignal);
@@ -485,47 +396,6 @@ describe("generateVoiceResponse", () => {
     });
   });
 
-  it("delivers plain Japanese blocks to TTS one sentence at a time", async () => {
-    const { runtime, runEmbeddedAgent } = createAgentRuntime([]);
-    runEmbeddedAgent.mockImplementationOnce(async (args: EmbeddedAgentArgs) => {
-      args.onBlockReply?.({
-        text: "私はclaw（🦀）といいます。ご用件をお聞かせください。",
-      });
-      await args.onBlockReplyFlush?.({ reason: "pre_compaction", attemptAccepted: true });
-      return { payloads: [], meta: { durationMs: 12, aborted: false } };
-    });
-    const delivered: string[] = [];
-    const onEarlyText = vi.fn(async (text: string) => {
-      delivered.push(text);
-      return true;
-    });
-
-    const { result } = await runGenerateVoiceResponse([], { runtime, onEarlyText });
-
-    expect(delivered).toEqual(["私はclaw（🦀）といいます。", "ご用件をお聞かせください。"]);
-    expect(result).toEqual({
-      text: "私はclaw（🦀）といいます。 ご用件をお聞かせください。",
-      deliveredEarly: true,
-    });
-  });
-
-  it("starts TTS from streamed Japanese partials before the final response", async () => {
-    const fullText = "確認しました。現在の温度は24度です。";
-    const { runtime } = createAgentRuntime([{ text: fullText }], {
-      partialReplyPayloads: [{ text: "確認しました。" }, { text: fullText }],
-    });
-    const delivered: string[] = [];
-    const onEarlyText = vi.fn(async (text: string) => {
-      delivered.push(text);
-      return true;
-    });
-
-    const { result } = await runGenerateVoiceResponse([], { runtime, onEarlyText });
-
-    expect(delivered).toEqual(["確認しました。", "現在の温度は24度です。"]);
-    expect(result).toEqual({ text: fullText, deliveredEarly: true });
-  });
-
   it("awaits in-flight early delivery before exposing the fallback decision", async () => {
     const { runtime } = createAgentRuntime([], {
       blockReplyPayloads: [{ text: '{"spoken":"No duplicate."}' }],
@@ -564,7 +434,7 @@ describe("generateVoiceResponse", () => {
 
     const { result } = await runGenerateVoiceResponse([], { runtime, onEarlyText });
 
-    expect(delivered).toEqual(["First block.", "Second block."]);
+    expect(delivered).toEqual(["First block. Second block."]);
     expect(result).toEqual({
       text: "First block. Second block.",
       deliveredEarly: true,
@@ -701,7 +571,7 @@ describe("generateVoiceResponse", () => {
       onEarlyText,
     });
 
-    expect(onEarlyText).toHaveBeenCalledWith("First block.");
+    expect(onEarlyText).toHaveBeenCalledWith("First block. Try the fallback.");
     expect(result).toEqual({
       text: "First block. Try the fallback.",
       deliveredEarly: false,
@@ -761,7 +631,7 @@ describe("generateVoiceResponse", () => {
 
     const result = await generateVoiceResponse({
       voiceConfig,
-      coreConfig: createTestCoreConfig(),
+      coreConfig: {} as OpenClawConfig,
       agentRuntime: runtime,
       callId: "call-123",
       from: "+15550001111",
@@ -811,7 +681,7 @@ describe("generateVoiceResponse", () => {
 
     const result = await generateVoiceResponse({
       voiceConfig,
-      coreConfig: createTestCoreConfig(),
+      coreConfig: {} as OpenClawConfig,
       agentRuntime: runtime,
       callId: "call-123",
       from: "+15550001111",
@@ -859,7 +729,7 @@ describe("generateVoiceResponse", () => {
 
     const result = await generateVoiceResponse({
       voiceConfig,
-      coreConfig: createTestCoreConfig(),
+      coreConfig: {} as OpenClawConfig,
       agentRuntime: runtime,
       callId: "call-123",
       sessionKey,
@@ -1085,7 +955,7 @@ describe("generateVoiceResponse", () => {
     });
     expect(args.sandboxSessionKey).toBe("agent:main:voice:15550001111");
     expect(args.workspaceDir).toBe("/tmp/openclaw/workspace/main");
-    expect(args.sessionFile).toMatch(/\/agents\/main\/sessions\/[^/]+\.jsonl$/u);
+    expect(args.sessionFile).toBeUndefined();
   });
 
   it("uses the configured voice response agent workspace", async () => {
@@ -1135,7 +1005,7 @@ describe("generateVoiceResponse", () => {
     });
     expect(args.sandboxSessionKey).toBe("agent:voice:voice:15550001111");
     expect(args.workspaceDir).toBe("/tmp/openclaw/workspace/voice");
-    expect(args.sessionFile).toMatch(/\/agents\/voice\/sessions\/[^/]+\.jsonl$/u);
+    expect(args.sessionFile).toBeUndefined();
   });
 
   it("prefers the agent frozen on the call", async () => {
@@ -1196,12 +1066,5 @@ describe("generateVoiceResponse", () => {
     const args = requireEmbeddedAgentArgs(runEmbeddedAgent);
     expect(args.agentId).toBe("voice");
     expect(args.toolsAllow).toStrictEqual([]);
-    expect(args.blockReplyChunking).toMatchObject({
-      minChars: 1,
-      breakPreference: "sentence",
-    });
-    expect(args.extraSystemPrompt).toContain(
-      "You do not have tools. Answer directly without attempting tool calls.",
-    );
   });
 });

@@ -388,7 +388,7 @@ export const VoiceCallConfigSchema = z
     enabled: z.boolean().default(false),
 
     /** Active provider (telnyx, twilio, plivo, or mock) */
-    provider: z.enum(["telnyx", "twilio", "plivo", "mock", "sip"]).optional(),
+    provider: z.enum(["telnyx", "twilio", "plivo", "mock"]).optional(),
 
     /** Telnyx-specific configuration */
     telnyx: TelnyxConfigSchema.optional(),
@@ -460,62 +460,6 @@ export const VoiceCallConfigSchema = z
     /** Realtime voice-to-voice configuration */
     realtime: VoiceCallRealtimeConfigSchema,
 
-    /**
-     * SIP（Asterisk 経由）の設定。
-     *
-     * Asterisk が SIP・RTP・コーデックを終端し、AudioSocket で音声だけを渡してくる。
-     * こちらは待ち受けるポートと、書き起こし/音声化を担う中継の場所を知っていればよい。
-     */
-    sip: z
-      .object({
-        /** AudioSocket を待ち受ける先。Asterisk から届く必要がある */
-        bind: z.string().default("0.0.0.0"),
-        port: z.number().int().min(1).max(65535).default(9092),
-        /** voisona-relay。/stt と /wav の両方を持つ */
-        relayUrl: z.string().url().default("http://mac-mini:32767"),
-        relayUser: z.string().default(""),
-        relayPassword: z.string().default(""),
-        /** 話し終わりと見なす無音の長さ。短いと語間で切れ、長いと応答が遅れる */
-        silenceMs: z.number().int().min(200).max(5000).default(800),
-        /** これより静かな 20ms は無音として扱う */
-        silenceRms: z.number().int().min(1).max(20000).default(500),
-        /** これ未満は物音として捨てる */
-        minSpeechMs: z.number().int().min(0).max(5000).default(300),
-        maxUtteranceMs: z.number().int().min(1000).max(120000).default(20000),
-        /**
-         * 発信に使う Asterisk の ARI。省略すると発信できない（受信は動く）。
-         *
-         * AudioSocket は UUID しか運ばないので、発信側も同じ UUID を originate の
-         * 変数で渡し、応答したチャネルを受信と同じ待ち受けへ流す。媒体経路は一本。
-         */
-        ari: z
-          .object({
-            baseUrl: z.string().url(),
-            username: z.string().min(1),
-            password: z.string().min(1),
-            /** 発信チャネル。{number} を宛先で置換する */
-            endpoint: z.string().min(1).default("Quectel/quectel0/{number}"),
-            /**
-             * 内線用の発信チャネル。`extensionPattern` に一致する宛先はこちらを使う。
-             *
-             * 既定の endpoint は LTE のトランクなので、内線番号を渡すと外線へ出て
-             * しまう。**技術（PJSIP / Quectel）が違うので、番号だけでは切り替わらない。**
-             */
-            extensionEndpoint: z.string().min(1).default("PJSIP/{number}"),
-            /** 内線と見なす宛先。既定は 3〜4 桁の数字 */
-            extensionPattern: z.string().min(1).default("^\\d{3,4}$"),
-            /** 応答後の着地点 */
-            context: z.string().min(1).default("openclaw-outbound"),
-            extension: z.string().min(1).default("701"),
-            /** 相手が出るまで待つ秒数 */
-            timeoutSeconds: z.number().int().min(5).max(120).default(45),
-            /** 発信者番号。省略すると Asterisk 既定 */
-            callerId: z.string().optional(),
-          })
-          .optional(),
-      })
-      .default({}),
-
     /** Session memory scope for voice conversations. */
     sessionScope: VoiceCallSessionScopeSchema.default("per-phone"),
 
@@ -533,17 +477,6 @@ export const VoiceCallConfigSchema = z
 
     /** Response/session owner. Required when multiple agents have no legacy owner. */
     agentId: z.string().min(1).optional(),
-
-    /**
-     * Pin every call to `agentId`, ignoring the agent that asked for it.
-     *
-     * By default an outbound call is owned by whoever initiated it, so a chat agent
-     * asking for a call also answers on it — with its own model, tools and prompt.
-     * That is the wrong shape when the voice agent exists precisely to keep calls on
-     * a local model with no tools: the caller's context arrives through the
-     * `message` argument instead, which is what it is for.
-     */
-    pinConfiguredAgent: z.boolean().default(false),
 
     /** Optional model override for generating voice responses. */
     responseModel: z.string().optional(),

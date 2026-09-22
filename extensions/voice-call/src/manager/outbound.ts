@@ -144,20 +144,10 @@ export async function initiateCall(
   const opts: OutboundCallOptions =
     typeof options === "string" ? { message: options } : (options ?? {});
   const initialMessage = opts.message;
-  // Never spoken. Carried on the call so the agent taking it knows why it was placed —
-  // needed once `pinConfiguredAgent` stops the initiator from owning the call.
-  const brief = opts.brief?.trim() || undefined;
   const mode = opts.mode ?? ctx.config.outbound.defaultMode;
   const dtmfSequence = opts.dtmfSequence;
   const requesterSessionKey = opts.requesterSessionKey?.trim();
-  // `pinConfiguredAgent` keeps calls on the configured voice agent even when another
-  // agent placed them. Without it the initiator owns the call and answers with its own
-  // model and tools; the caller's intent is carried by `message`, not by ownership.
-  const agentId = normalizeAgentId(
-    ctx.config.pinConfiguredAgent && ctx.config.agentId
-      ? ctx.config.agentId
-      : (opts.agentId ?? ctx.config.agentId),
-  );
+  const agentId = normalizeAgentId(opts.agentId ?? ctx.config.agentId);
   if (dtmfSequence) {
     const validationError = validateDtmfDigits(dtmfSequence);
     if (validationError) {
@@ -214,7 +204,6 @@ export async function initiateCall(
     processedEventIds: [],
     metadata: {
       ...(initialMessage && { initialMessage }),
-      ...(brief && { brief }),
       mode,
       ...(requesterSessionKey ? { requesterSessionKey } : {}),
     },
