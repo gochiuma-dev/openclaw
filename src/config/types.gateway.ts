@@ -503,6 +503,32 @@ export type GatewayNodePairingConfig = {
       };
 };
 
+/**
+ * Handling policy for notifications a device node forwards (`notifications.changed`).
+ *
+ * The legacy path queues one system event per notification and wakes the owning
+ * agent for each one, so a steady drip of device notifications costs one agent
+ * turn apiece. The queue behind those events is in-memory and bounded, so
+ * suppressing the wake alone would silently drop events; `log` and `hybrid`
+ * therefore persist every event to a durable log that a scheduled job can read.
+ */
+export type GatewayNodeNotificationsConfig = {
+  /**
+   * How a forwarded notification is handled (default: `wake`).
+   * - `wake`: queue a system event and wake the agent immediately.
+   * - `log`: append to the durable notification log only; never wake.
+   * - `hybrid`: always append to the log, and wake only for `wakePackages`.
+   */
+  mode?: "wake" | "log" | "hybrid";
+  /**
+   * Package names that still wake the agent immediately under `hybrid`.
+   * An empty or unset list makes `hybrid` behave exactly like `log`.
+   */
+  wakePackages?: string[];
+  /** Directory holding the durable notification log (default: `<stateDir>/notifications`). */
+  logDir?: string;
+};
+
 export type GatewayNodesConfig = {
   /** @deprecated Doctor-only legacy input. */
   skills?: { enabled?: boolean };
@@ -526,6 +552,8 @@ export type GatewayNodesConfig = {
   };
   /** Accept node-published skill descriptors (default: true). */
   allowSkills?: boolean;
+  /** Handling policy for forwarded device notifications (`notifications.changed`). */
+  notifications?: GatewayNodeNotificationsConfig;
   commands?: {
     /** Additional node.invoke commands to allow on the gateway. */
     allow?: string[];

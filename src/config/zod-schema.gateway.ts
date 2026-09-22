@@ -303,6 +303,13 @@ export const GatewayConfigSchema = z
           })
           .optional(),
         allowSkills: z.boolean().optional(),
+        notifications: z
+          .strictObject({
+            mode: z.enum(["wake", "log", "hybrid"]).optional(),
+            wakePackages: z.array(z.string()).optional(),
+            logDir: z.string().optional(),
+          })
+          .optional(),
         commands: z
           .strictObject({
             allow: z.array(z.string()).optional(),

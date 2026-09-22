@@ -374,6 +374,15 @@ export function resolveDeliveryQueueMediaDir(stateDir?: string): string {
   return path.join(stateDir ?? resolveStateDir(), "delivery-queue-media");
 }
 
+/**
+ * Durable day-partitioned log of notifications forwarded by device nodes. The
+ * system-event queue these used to land in is in-memory and bounded, so this is
+ * the only record that survives a bounded burst or a gateway restart.
+ */
+export function resolveNotificationLogDir(stateDir?: string): string {
+  return path.join(stateDir ?? resolveStateDir(), "notifications");
+}
+
 /** Resolves the legacy credentials directory retained for Doctor and backup ownership. */
 export function resolveOAuthDir(
   env: NodeJS.ProcessEnv = process.env,

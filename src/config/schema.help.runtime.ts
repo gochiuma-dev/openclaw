@@ -275,6 +275,14 @@ export const RUNTIME_FIELD_HELP: Record<string, string> = {
   "gateway.nodes.pairing.sshVerify":
     "SSH-verified auto-approval for first-time node-role device pairing (default: enabled). The gateway SSHes back to the pairing host (BatchMode, strict host keys) and approves only when the remote `openclaw node identity` output matches the pending device key. Set false to disable SSH verification (independent of autoApproveCidrs, which stays active); for manual-only pairing also unset autoApproveCidrs. Pass an object to override user/identity/timeoutMs/cidrs.",
   ...NODE_CAPABILITY_FIELD_HELP,
+  "gateway.nodes.notifications":
+    "Handling policy for notifications forwarded by device nodes. Defaults to the legacy behavior, which wakes the owning agent once per notification.",
+  "gateway.nodes.notifications.mode":
+    'How each forwarded notification is handled (default: "wake"). "wake" queues a system event and wakes the agent immediately, costing one agent turn per notification. "log" appends to the durable notification log and never wakes. "hybrid" always appends to the log and wakes only for gateway.nodes.notifications.wakePackages. Batched modes log first because the system-event queue behind the legacy path is in-memory and bounded.',
+  "gateway.nodes.notifications.wakePackages":
+    'Package names that still wake the agent immediately under mode "hybrid" (array of package name strings, matched case-insensitively). An empty or unset list makes "hybrid" behave exactly like "log".',
+  "gateway.nodes.notifications.logDir":
+    "Directory holding the day-partitioned JSONL notification log written by the log and hybrid modes. Defaults to `<stateDir>/notifications`.",
   "gateway.nodes.commands.allow":
     "Extra node.invoke commands to allow beyond the gateway defaults (array of command strings). Enabling dangerous commands here is a security-sensitive override and is flagged by `openclaw security audit`.",
   "gateway.nodes.commands.deny":
