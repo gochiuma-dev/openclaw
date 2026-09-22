@@ -1,5 +1,6 @@
 package ai.openclaw.app.ui
 
+import ai.openclaw.app.gateway.GatewayCustomHeaderDraft
 import ai.openclaw.app.gateway.isLocalCleartextGatewayHost
 import ai.openclaw.app.gateway.normalizeGatewayContextPath
 import ai.openclaw.app.i18n.NativeText
@@ -46,6 +47,9 @@ internal data class GatewayConnectConfig(
   val token: String,
   val password: String,
   val contextPath: String = "",
+  // Edge-proxy header edits ride along with the endpoint they belong to: the store keys them by
+  // the resolved stable id, which only exists once host/port/TLS have been validated here.
+  val customHeaders: List<GatewayCustomHeaderDraft> = emptyList(),
 )
 
 /** How a connection attempt may update credentials already owned by the runtime. */
@@ -107,6 +111,7 @@ internal fun resolveGatewayConnectConfig(
   bootstrapTokenInput: String,
   tokenInput: String,
   passwordInput: String,
+  customHeaderDrafts: List<GatewayCustomHeaderDraft> = emptyList(),
 ): GatewayConnectConfig? {
   if (useSetupCode) {
     val setup = resolveSetupCodeCandidate(setupCode)?.let(::decodeGatewaySetupCode) ?: return null
@@ -138,6 +143,7 @@ internal fun resolveGatewayConnectConfig(
       bootstrapToken = setupBootstrapToken,
       token = sharedToken,
       password = sharedPassword,
+      customHeaders = customHeaderDrafts,
     )
   }
 
@@ -154,6 +160,7 @@ internal fun resolveGatewayConnectConfig(
     bootstrapToken = bootstrapToken,
     token = token,
     password = password,
+    customHeaders = customHeaderDrafts,
   )
 }
 
@@ -173,6 +180,7 @@ internal fun resolveGatewayConnectPlan(
   tokenInput: String,
   bootstrapTokenInput: String,
   passwordInput: String,
+  customHeaderDrafts: List<GatewayCustomHeaderDraft> = emptyList(),
 ): GatewayConnectPlan? {
   val config =
     resolveGatewayConnectConfig(
@@ -184,6 +192,7 @@ internal fun resolveGatewayConnectPlan(
       tokenInput = tokenInput,
       bootstrapTokenInput = bootstrapTokenInput,
       passwordInput = passwordInput,
+      customHeaderDrafts = customHeaderDrafts,
     ) ?: return null
   if (useSetupCode) {
     return GatewayConnectPlan(config, GatewaySavedAuthAction.REPLACE_SETUP)

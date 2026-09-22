@@ -22,7 +22,10 @@ import { resolveSystemMainSessionTarget } from "../config/sessions/main-session.
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { loadOrCreateProcessDeviceIdentity } from "../infra/device-identity.js";
-import { updatePairedDevicePresence, type NodePairingGeneration } from "../infra/device-pairing.js";
+import {
+  updatePairedDevicePresence,
+  type NodePairingGeneration,
+} from "../infra/device-pairing.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
   resolveEventSessionKeyForPolicy,
@@ -31,6 +34,12 @@ import {
 } from "../infra/event-session-routing.js";
 import { requestHeartbeat } from "../infra/heartbeat-wake.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
+import {
+  appendNotificationLogEntry,
+  resolveNotificationForwardingPolicy,
+  shouldLogNotification,
+  shouldWakeForNotification,
+} from "../infra/notification-log.js";
 import { buildOutboundSessionContext } from "../infra/outbound/session-context.js";
 import { resolveOutboundTarget } from "../infra/outbound/targets.js";
 import {
@@ -42,7 +51,10 @@ import { enqueueSystemEvent } from "../infra/system-events.js";
 import type { PromptImageOrderEntry } from "../media/prompt-image-order.js";
 import { deleteMediaBuffer } from "../media/store.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../process/gateway-work-admission.js";
-import { isUnscopedSessionKeySentinel, normalizeMainKey } from "../routing/session-key.js";
+import {
+  isUnscopedSessionKeySentinel,
+  normalizeMainKey,
+} from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { resolveAgentHarnessSessionContextError } from "../sessions/agent-harness-session-key.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -61,7 +73,10 @@ import {
 } from "./chat-attachments.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./server-methods/attachment-normalize.js";
 import { registerNodeApnsEvent } from "./server-node-events-apns.js";
-import type { NodeEvent, NodeEventContext } from "./server-node-events-types.js";
+import type {
+  NodeEvent,
+  NodeEventContext,
+} from "./server-node-events-types.js";
 import {
   loadSessionEntry,
   resolveGatewayModelSupportsImages,
@@ -78,7 +93,10 @@ const MAX_RECENT_EXEC_FINISHED_RUNS = 2000;
 const NODE_PRESENCE_PERSIST_MIN_INTERVAL_MS = 60_000;
 const MAX_RECENT_NODE_PRESENCE_KEYS = 1024;
 
-const recentVoiceTranscripts = new Map<string, { fingerprint: string; ts: number }>();
+const recentVoiceTranscripts = new Map<
+  string,
+  { fingerprint: string; ts: number }
+>();
 type VoiceTranscriptReservationAdmission = { work: Promise<unknown> } | null;
 type VoiceTranscriptReservation = {
   fingerprint: string;
@@ -90,7 +108,10 @@ type VoiceTranscriptReservation = {
   rejectDecision: (reason: unknown) => void;
   decision: Promise<VoiceTranscriptReservationAdmission>;
 };
-const pendingVoiceTranscriptReservations = new Map<string, VoiceTranscriptReservation[]>();
+const pendingVoiceTranscriptReservations = new Map<
+  string,
+  VoiceTranscriptReservation[]
+>();
 const recentExecFinishedRuns = new Map<string, number>();
 const recentNodePresencePersistAt = new Map<string, number>();
 
@@ -104,7 +125,9 @@ type NodeEventHandleResult = {
 type NodeAgentCommandInput = Parameters<typeof agentCommandFromIngress>[0];
 
 function normalizeFiniteInteger(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : null;
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.trunc(value)
+    : null;
 }
 
 function dispatchNodeAgentCommand(
@@ -128,7 +151,10 @@ function dispatchNodeAgentCommand(
   });
 }
 
-function resolveVoiceTranscriptFingerprint(obj: Record<string, unknown>, text: string): string {
+function resolveVoiceTranscriptFingerprint(
+  obj: Record<string, unknown>,
+  text: string,
+): string {
   const eventId =
     normalizeOptionalString(obj.eventId) ??
     normalizeOptionalString(obj.providerEventId) ??
@@ -137,8 +163,11 @@ function resolveVoiceTranscriptFingerprint(obj: Record<string, unknown>, text: s
     return `event:${eventId}`;
   }
 
-  const callId = normalizeOptionalString(obj.providerCallId) ?? normalizeOptionalString(obj.callId);
-  const sequence = normalizeFiniteInteger(obj.sequence) ?? normalizeFiniteInteger(obj.seq);
+  const callId =
+    normalizeOptionalString(obj.providerCallId) ??
+    normalizeOptionalString(obj.callId);
+  const sequence =
+    normalizeFiniteInteger(obj.sequence) ?? normalizeFiniteInteger(obj.seq);
   if (callId && sequence !== null) {
     return `call-seq:${callId}:${sequence}`;
   }
@@ -239,7 +268,9 @@ function reserveVoiceTranscript(params: {
     next.status = "checking";
     void (async () => {
       try {
-        const isCurrent = next.isConnectionCurrent ? await next.isConnectionCurrent() : true;
+        const isCurrent = next.isConnectionCurrent
+          ? await next.isConnectionCurrent()
+          : true;
         const admission =
           isCurrent &&
           !shouldDropDuplicateVoiceTranscript({
@@ -295,7 +326,11 @@ function dispatchReservedVoiceAgentCommand(params: {
       isConnectionCurrent: params.isConnectionCurrent,
       start: () => {
         params.onStart();
-        return agentCommandFromIngress(params.input, defaultRuntime, params.ctx.deps);
+        return agentCommandFromIngress(
+          params.input,
+          defaultRuntime,
+          params.ctx.deps,
+        );
       },
     });
     if (!admission) {
@@ -304,7 +339,9 @@ function dispatchReservedVoiceAgentCommand(params: {
     await admission.work;
   }, "node-events:voice-turn").catch((err: unknown) => {
     params.reservation.reject();
-    params.ctx.logGateway.warn(`agent failed node=${params.nodeId}: ${formatForLog(err)}`);
+    params.ctx.logGateway.warn(
+      `agent failed node=${params.nodeId}: ${formatForLog(err)}`,
+    );
   });
 }
 
@@ -415,7 +452,9 @@ function queueSessionStoreTouch(params: {
       now: params.now,
     });
   }, "node-events:voice-persist").catch((err: unknown) => {
-    params.ctx.logGateway.warn("voice session-store update failed: " + formatForLog(err));
+    params.ctx.logGateway.warn(
+      "voice session-store update failed: " + formatForLog(err),
+    );
   });
 }
 
@@ -451,7 +490,9 @@ async function cleanupNodeEventMedia(
   }
 }
 
-function parsePayloadObject(payloadJSON?: string | null): Record<string, unknown> | null {
+function parsePayloadObject(
+  payloadJSON?: string | null,
+): Record<string, unknown> | null {
   if (!payloadJSON) {
     return null;
   }
@@ -512,7 +553,8 @@ export const handleNodeEvent = async (
     pairingGeneration?: NodePairingGeneration;
     presenceAllowed?: boolean;
     isConnectionCurrent?: () => boolean | Promise<boolean>;
-    resolveApnsRegistrationGeneration?: () => string | null | Promise<string | null>;
+    resolveApnsRegistrationGeneration?: () =>
+      string | null | Promise<string | null>;
     assertApnsRegistrationCurrent?: () => void;
   },
 ): Promise<NodeEventHandleResult | undefined> => {
@@ -523,7 +565,12 @@ export const handleNodeEvent = async (
     case "node.desktop.availability": {
       const availability = parsePayloadObject(evt.payloadJSON);
       if (!Value.Check(DesktopAvailabilitySchema, availability)) {
-        return { ok: true, event: evt.event, handled: false, reason: "invalid_payload" };
+        return {
+          ok: true,
+          event: evt.event,
+          handled: false,
+          reason: "invalid_payload",
+        };
       }
       const updated = ctx.updateNodeDesktopAvailability?.({
         nodeId,
@@ -531,7 +578,12 @@ export const handleNodeEvent = async (
         availability,
       });
       if (updated === null || updated === undefined) {
-        return { ok: true, event: evt.event, handled: false, reason: "stale_connection" };
+        return {
+          ok: true,
+          event: evt.event,
+          handled: false,
+          reason: "stale_connection",
+        };
       }
       return {
         ok: true,
@@ -642,7 +694,8 @@ export const handleNodeEvent = async (
       }
 
       const sessionKeyRaw = (link?.sessionKey ?? "").trim();
-      const sessionKey = sessionKeyRaw.length > 0 ? sessionKeyRaw : `node-${nodeId}`;
+      const sessionKey =
+        sessionKeyRaw.length > 0 ? sessionKeyRaw : `node-${nodeId}`;
       const cfg = getRuntimeConfig();
       const { storePath, entry, canonicalKey } = loadSessionEntry(sessionKey);
       if (resolveAgentHarnessSessionContextError(canonicalKey, entry)) {
@@ -654,10 +707,13 @@ export const handleNodeEvent = async (
       const normalizedAttachments = normalizeRpcAttachmentsToChatAttachments(
         link?.attachments ?? undefined,
       );
-      let images: Awaited<ReturnType<typeof parseMessageWithAttachments>>["images"] = [];
+      let images: Awaited<
+        ReturnType<typeof parseMessageWithAttachments>
+      >["images"] = [];
       let imageOrder: PromptImageOrderEntry[] = [];
-      let offloadedRefs: Awaited<ReturnType<typeof parseMessageWithAttachments>>["offloadedRefs"] =
-        [];
+      let offloadedRefs: Awaited<
+        ReturnType<typeof parseMessageWithAttachments>
+      >["offloadedRefs"] = [];
       if (!message && normalizedAttachments.length === 0) {
         return undefined;
       }
@@ -665,7 +721,10 @@ export const handleNodeEvent = async (
         return undefined;
       }
       if (normalizedAttachments.length > 0) {
-        const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
+        const sessionAgentId = resolveSessionAgentId({
+          sessionKey,
+          config: cfg,
+        });
         const modelRef = resolveSessionModelRef(cfg, entry, sessionAgentId);
         const supportsInlineImages = await resolveGatewayModelSupportsImages({
           loadGatewayModelCatalog: ctx.loadGatewayModelCatalog,
@@ -678,15 +737,19 @@ export const handleNodeEvent = async (
           return pairingChangedResult(evt.event);
         }
         try {
-          const parsed = await parseMessageWithAttachments(message, normalizedAttachments, {
-            maxBytes: resolveChatAttachmentMaxBytes(cfg),
-            log: ctx.logGateway,
-            supportsInlineImages,
-            // server-node-events dispatches via agentCommandFromIngress which
-            // has no structured media wiring; reject non-image attachments
-            // explicitly rather than saving them where the agent cannot reach them.
-            acceptNonImage: false,
-          });
+          const parsed = await parseMessageWithAttachments(
+            message,
+            normalizedAttachments,
+            {
+              maxBytes: resolveChatAttachmentMaxBytes(cfg),
+              log: ctx.logGateway,
+              supportsInlineImages,
+              // server-node-events dispatches via agentCommandFromIngress which
+              // has no structured media wiring; reject non-image attachments
+              // explicitly rather than saving them where the agent cannot reach them.
+              acceptNonImage: false,
+            },
+          );
           if (!(await isNodeEventConnectionCurrent(opts))) {
             await cleanupNodeEventMedia(
               (parsed.offloadedRefs ?? []).map((ref) => ref.id),
@@ -711,7 +774,9 @@ export const handleNodeEvent = async (
             return undefined;
           }
         } catch (err) {
-          ctx.logGateway.warn(`agent.request attachment parse failed: ${formatErrorMessage(err)}`);
+          ctx.logGateway.warn(
+            `agent.request attachment parse failed: ${formatErrorMessage(err)}`,
+          );
           return undefined;
         }
       }
@@ -796,11 +861,16 @@ export const handleNodeEvent = async (
         return pairingChangedResult(evt.event);
       }
       if (persistedTranscriptMedia.omission === "inline-image-save-failed") {
-        transcriptMessage = [transcriptMessage, INLINE_IMAGE_DURABLE_OMISSION_MARKER]
+        transcriptMessage = [
+          transcriptMessage,
+          INLINE_IMAGE_DURABLE_OMISSION_MARKER,
+        ]
           .filter(Boolean)
           .join("\n");
       }
-      const transcriptMedia = persistedTranscriptMedia.entries.map((media) => media.fact);
+      const transcriptMedia = persistedTranscriptMedia.entries.map(
+        (media) => media.fact,
+      );
 
       if (wantsReceipt && deliveryChannel && deliveryTo) {
         // Delivery stays detached from agent startup, but remains part of the
@@ -818,7 +888,9 @@ export const handleNodeEvent = async (
             text: receiptText,
           });
         }, "node-events:delivery").catch((err: unknown) => {
-          ctx.logGateway.warn(`agent receipt failed node=${nodeId}: ${formatForLog(err)}`);
+          ctx.logGateway.warn(
+            `agent receipt failed node=${nodeId}: ${formatForLog(err)}`,
+          );
         });
       } else if (wantsReceipt) {
         ctx.logGateway.warn(
@@ -836,7 +908,10 @@ export const handleNodeEvent = async (
           imageOrder,
           ...(transcriptMedia.length > 0 ||
           persistedTranscriptMedia.omission === "inline-image-save-failed"
-            ? { transcriptMessage, ...(transcriptMedia.length > 0 ? { transcriptMedia } : {}) }
+            ? {
+                transcriptMessage,
+                ...(transcriptMedia.length > 0 ? { transcriptMedia } : {}),
+              }
             : {}),
           sessionId,
           sessionKey: canonicalKey,
@@ -845,7 +920,9 @@ export const handleNodeEvent = async (
           to: deliveryTo,
           channel: deliveryChannel,
           timeout:
-            typeof link?.timeoutSeconds === "number" ? link.timeoutSeconds.toString() : undefined,
+            typeof link?.timeoutSeconds === "number"
+              ? link.timeoutSeconds.toString()
+              : undefined,
           messageChannel: "node",
           allowModelOverride: false,
         },
@@ -919,24 +996,71 @@ export const handleNodeEvent = async (
         }
       }
 
-      const queued = enqueueSystemEvent(
-        summary,
-        withSystemEventOwner({ sessionKey, contextKey: `notification:${keyRaw}` }, agentId),
+      const notificationsConfig = getRuntimeConfig();
+      const policy = resolveNotificationForwardingPolicy(
+        notificationsConfig.gateway?.nodes?.notifications,
       );
-      if (queued) {
-        requestHeartbeat({
-          source: "notifications-event",
-          intent: "event",
-          reason: "notifications-event",
-          agentId,
+      const timeZone = notificationsConfig.agents?.defaults?.userTimezone;
+      const wake = shouldWakeForNotification(policy, packageName);
+
+      const wakeNow = () => {
+        const eventOptions = {
           sessionKey,
+          contextKey: `notification:${keyRaw}`,
+        };
+        const queued = enqueueSystemEvent(
+          summary,
+          withSystemEventOwner(eventOptions, agentId),
+        );
+        if (queued) {
+          requestHeartbeat({
+            source: "notifications-event",
+            intent: "event",
+            reason: "notifications-event",
+            agentId,
+            sessionKey,
+          });
+        }
+      };
+
+      if (shouldLogNotification(policy)) {
+        // The log is the durable record in batched modes, so a failed append
+        // must not silently drop the notification: fall back to the legacy
+        // wake, which at least surfaces it on the next turn.
+        void appendNotificationLogEntry(
+          policy,
+          {
+            ts: new Date().toISOString(),
+            change,
+            nodeId,
+            key,
+            packageName,
+            title,
+            text,
+            sessionKey,
+            woke: wake,
+          },
+          timeZone,
+        ).catch((error: unknown) => {
+          ctx.logGateway.warn(
+            `notification log append failed node=${nodeId} key=${key}: ${formatErrorMessage(error)}`,
+          );
+          if (!wake) {
+            wakeNow();
+          }
         });
+      }
+
+      if (wake) {
+        wakeNow();
       }
       return undefined;
     }
     case "chat.subscribe":
     case "chat.unsubscribe": {
-      const sessionKey = normalizeOptionalString(parsePayloadObject(evt.payloadJSON)?.sessionKey);
+      const sessionKey = normalizeOptionalString(
+        parsePayloadObject(evt.payloadJSON)?.sessionKey,
+      );
       if (!sessionKey) {
         return undefined;
       }
@@ -956,8 +1080,10 @@ export const handleNodeEvent = async (
       if (!obj) {
         return undefined;
       }
-      const sessionKeyRaw = normalizeOptionalString(obj.sessionKey) ?? `node-${nodeId}`;
-      const { canonicalKey: sessionKey, agentId } = loadSessionEntry(sessionKeyRaw);
+      const sessionKeyRaw =
+        normalizeOptionalString(obj.sessionKey) ?? `node-${nodeId}`;
+      const { canonicalKey: sessionKey, agentId } =
+        loadSessionEntry(sessionKeyRaw);
 
       const cfg = getRuntimeConfig();
       const runId = normalizeOptionalString(obj.runId) ?? "";
@@ -968,7 +1094,8 @@ export const handleNodeEvent = async (
           ...(runId ? { runId } : {}),
           // Match the key sent in system.run params; canonicalization below is for routing.
           sessionKey: sessionKeyRaw,
-          terminal: evt.event === "exec.finished" || evt.event === "exec.denied",
+          terminal:
+            evt.event === "exec.finished" || evt.event === "exec.denied",
         })
       ) {
         return {
@@ -1006,8 +1133,12 @@ export const handleNodeEvent = async (
         }
       } else {
         const exitLabel = timedOut ? "timeout" : `code ${exitCode ?? "?"}`;
-        const compactOutput = compactNodeEventText(output, MAX_EXEC_EVENT_OUTPUT_CHARS);
-        const shouldNotify = timedOut || exitCode !== 0 || compactOutput.length > 0;
+        const compactOutput = compactNodeEventText(
+          output,
+          MAX_EXEC_EVENT_OUTPUT_CHARS,
+        );
+        const shouldNotify =
+          timedOut || exitCode !== 0 || compactOutput.length > 0;
         if (!shouldNotify) {
           return undefined;
         }
@@ -1027,12 +1158,18 @@ export const handleNodeEvent = async (
         }
       }
 
-      const eventRouting = resolveEventSessionRoutingPolicy({ cfg, sessionKey });
+      const eventRouting = resolveEventSessionRoutingPolicy({
+        cfg,
+        sessionKey,
+      });
       const queued = enqueueSystemEvent(
         text,
         withSystemEventOwner(
           {
-            sessionKey: resolveEventSessionKeyForPolicy(sessionKey, eventRouting),
+            sessionKey: resolveEventSessionKeyForPolicy(
+              sessionKey,
+              eventRouting,
+            ),
             contextKey: runId ? `exec:${runId}` : "exec",
           },
           agentId,
@@ -1067,29 +1204,62 @@ export const handleNodeEvent = async (
         loadOrCreateProcessDeviceIdentity,
         formatForLog,
       });
-      return result === "pairing-changed" ? pairingChangedResult(evt.event) : undefined;
+      return result === "pairing-changed"
+        ? pairingChangedResult(evt.event)
+        : undefined;
     }
     case NODE_HOST_STATS_EVENT: {
       const obj = parsePayloadObject(evt.payloadJSON);
       if (!obj || !validateNodeHostStatsPayload(obj)) {
-        return { ok: true, event: evt.event, handled: false, reason: "invalid_payload" };
+        return {
+          ok: true,
+          event: evt.event,
+          handled: false,
+          reason: "invalid_payload",
+        };
       }
-      const hostStats = ctx.updateNodeHostStats?.({ nodeId, connId: opts?.connId, stats: obj });
+      const hostStats = ctx.updateNodeHostStats?.({
+        nodeId,
+        connId: opts?.connId,
+        stats: obj,
+      });
       if (!hostStats) {
-        return { ok: true, event: evt.event, handled: false, reason: "stale_connection" };
+        return {
+          ok: true,
+          event: evt.event,
+          handled: false,
+          reason: "stale_connection",
+        };
       }
-      ctx.broadcast("node.hostStats", { nodeId, hostStats }, { dropIfSlow: true });
+      ctx.broadcast(
+        "node.hostStats",
+        { nodeId, hostStats },
+        { dropIfSlow: true },
+      );
       return { ok: true, event: evt.event, handled: true, reason: "updated" };
     }
     case NODE_PRESENCE_ACTIVITY_EVENT: {
       const obj = parsePayloadObject(evt.payloadJSON);
       if (!obj || !validateNodePresenceActivityPayload(obj)) {
-        return { ok: true, event: evt.event, handled: false, reason: "invalid_payload" };
+        return {
+          ok: true,
+          event: evt.event,
+          handled: false,
+          reason: "invalid_payload",
+        };
       }
       if ("action" in obj) {
-        const cleared = ctx.clearNodePresenceActivity?.({ nodeId, connId: opts?.connId });
+        const cleared = ctx.clearNodePresenceActivity?.({
+          nodeId,
+          connId: opts?.connId,
+        });
         if (cleared === null || cleared === undefined) {
-          return { ok: true, event: evt.event, handled: false, reason: "stale_connection" };
+          return {
+            ok: true,
+            event: evt.event,
+            handled: false,
+            reason: "stale_connection",
+          };
         }
         if (cleared) {
           ctx.broadcast(
@@ -1106,7 +1276,12 @@ export const handleNodeEvent = async (
         };
       }
       if (obj.source !== "app" && opts?.presenceAllowed !== true) {
-        return { ok: true, event: evt.event, handled: false, reason: "permission_required" };
+        return {
+          ok: true,
+          event: evt.event,
+          handled: false,
+          reason: "permission_required",
+        };
       }
       const updated = ctx.updateNodePresenceActivity?.({
         nodeId,
@@ -1114,19 +1289,38 @@ export const handleNodeEvent = async (
         ...obj,
       });
       if (!updated) {
-        return { ok: true, event: evt.event, handled: false, reason: "stale_connection" };
+        return {
+          ok: true,
+          event: evt.event,
+          handled: false,
+          reason: "stale_connection",
+        };
       }
-      ctx.broadcast("node.presence", { nodeId, ...updated }, { dropIfSlow: true });
+      ctx.broadcast(
+        "node.presence",
+        { nodeId, ...updated },
+        { dropIfSlow: true },
+      );
       return { ok: true, event: evt.event, handled: true, reason: "updated" };
     }
     case NODE_PRESENCE_ALIVE_EVENT: {
       const obj = parsePayloadObject(evt.payloadJSON);
       if (!obj) {
-        return { ok: true, event: evt.event, handled: false, reason: "invalid_payload" };
+        return {
+          ok: true,
+          event: evt.event,
+          handled: false,
+          reason: "invalid_payload",
+        };
       }
       const deviceId = normalizeOptionalString(opts?.deviceId);
       if (!deviceId) {
-        return { ok: true, event: evt.event, handled: false, reason: "missing_device_identity" };
+        return {
+          ok: true,
+          event: evt.event,
+          handled: false,
+          reason: "missing_device_identity",
+        };
       }
       const pairingGeneration = opts?.pairingGeneration;
       if (!pairingGeneration || pairingGeneration.nodeId !== deviceId) {
@@ -1134,9 +1328,15 @@ export const handleNodeEvent = async (
       }
       const now = Date.now();
       const presenceOwnerKey = `${deviceId}\0${pairingGeneration.key}`;
-      const lastPersistedAt = recentNodePresencePersistAt.get(presenceOwnerKey) ?? 0;
+      const lastPersistedAt =
+        recentNodePresencePersistAt.get(presenceOwnerKey) ?? 0;
       if (now - lastPersistedAt < NODE_PRESENCE_PERSIST_MIN_INTERVAL_MS) {
-        return { ok: true, event: evt.event, handled: true, reason: "throttled" };
+        return {
+          ok: true,
+          event: evt.event,
+          handled: true,
+          reason: "throttled",
+        };
       }
 
       const lastSeenReason = normalizeNodePresenceAliveReason(obj.trigger);
@@ -1160,14 +1360,31 @@ export const handleNodeEvent = async (
           ttlMs: NODE_PRESENCE_PERSIST_MIN_INTERVAL_MS * 10,
           maxEntries: MAX_RECENT_NODE_PRESENCE_KEYS,
         });
-        return { ok: true, event: evt.event, handled: true, reason: "persisted" };
+        return {
+          ok: true,
+          event: evt.event,
+          handled: true,
+          reason: "persisted",
+        };
       } catch (err) {
-        ctx.logGateway.warn(`node presence alive failed node=${nodeId}: ${formatForLog(err)}`);
-        return { ok: true, event: evt.event, handled: false, reason: "persist_failed" };
+        ctx.logGateway.warn(
+          `node presence alive failed node=${nodeId}: ${formatForLog(err)}`,
+        );
+        return {
+          ok: true,
+          event: evt.event,
+          handled: false,
+          reason: "persist_failed",
+        };
       }
     }
     default:
-      return { ok: true, event: evt.event, handled: false, reason: "unsupported_event" };
+      return {
+        ok: true,
+        event: evt.event,
+        handled: false,
+        reason: "unsupported_event",
+      };
   }
 };
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
