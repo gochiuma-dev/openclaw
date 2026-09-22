@@ -15,6 +15,19 @@ internal data class TalkModeGatewayConfigState(
   val interruptOnSpeech: Boolean?,
   val silenceTimeoutMs: Long,
   val realtimeRelayModelSupported: Boolean,
+  /**
+   * False once the Gateway explicitly selects a non-realtime Talk mode.
+   *
+   * `talk.realtime.mode` is the Gateway's own selector (`realtime`, `stt-tts`,
+   * `transcription`). A Gateway on `stt-tts` speaks through `talk.speak` and never opens a
+   * relay, so asking it for one just fails and turns Talk off.
+   *
+   * An **unset** mode stays on the relay. docs/platforms/android.md claims native Talk is
+   * the default, but the shipped contract is the opposite: TalkModeManagerTest drives a
+   * real session with `talk.config` = `{}` and expects realtime Talk to start. Only an
+   * explicit selection is acted on here, so no existing setup changes behaviour.
+   */
+  val realtimeRelayEligible: Boolean,
 )
 
 internal object TalkModeGatewayConfigParser {
@@ -44,6 +57,10 @@ internal object TalkModeGatewayConfigParser {
             ?.get("model")
             .asStringOrNull()
         }
+    val realtimeMode = normalizeTalkRealtimeToken(realtime?.get("mode"))
+    val realtimeTransport = normalizeTalkRealtimeToken(realtime?.get("transport"))
+    // An unset transport is the relay default the app itself sends when it opens a session.
+    val relayTransport = realtimeTransport == null || realtimeTransport == "gateway-relay"
     val sessionCfg = config?.get("session").asObjectOrNull()
     return TalkModeGatewayConfigState(
       mainSessionKey = normalizeMainKey(sessionCfg?.get("mainKey").asStringOrNull()),
@@ -58,8 +75,19 @@ internal object TalkModeGatewayConfigParser {
             realtimeClientHints?.get("gatewayRelaySupported").asBooleanOrNull()
               ?: isAndroidRealtimeRelayModelSupported(realtimeModel)
           ),
+      // 上流は 9.5 で stt-tts の除外を realtimeRelayModelSupported 側へ取り込んだ。
+      // こちらは transport と transcription も見るので、追加の関門として残す。
+      realtimeRelayEligible = realtimeMode != "stt-tts" && realtimeMode != "transcription" && relayTransport,
     )
   }
+
+  /** Lowercases a realtime selector so config casing never changes the routing decision. */
+  private fun normalizeTalkRealtimeToken(element: JsonElement?): String? =
+    element
+      .asStringOrNull()
+      ?.trim()
+      ?.takeIf(String::isNotEmpty)
+      ?.lowercase(Locale.US)
 
   /** Accepts only numeric whole-millisecond silence timeouts; malformed config uses defaults. */
   fun resolvedSilenceTimeoutMs(talk: JsonObject?): Long {

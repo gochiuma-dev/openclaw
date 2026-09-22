@@ -212,6 +212,20 @@ describe("EmbeddedBlockChunker", () => {
     },
   );
 
+  it("breaks streamed Japanese replies at 。！？ without trailing whitespace", () => {
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 8,
+      maxChars: 24,
+      breakPreference: "sentence",
+    });
+    // Japanese writes no space after a sentence end, so the Latin-only
+    // lookahead would buffer the whole reply instead of streaming it.
+    for (const sentence of ["わたし、ういだよ。", "ご用件をお聞かせください。"]) {
+      chunker.append(sentence);
+      expect(drainChunks(chunker)).toEqual([sentence]);
+    }
+  });
+
   it("buffers without chunking and replaces a native source suffix before or after a drain", () => {
     const chunker = new EmbeddedBlockChunker();
     chunker.append("Earlier ");

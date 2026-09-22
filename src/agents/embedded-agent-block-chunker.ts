@@ -41,7 +41,10 @@ function findSafeSentenceBreakIndex(
   offset = 0,
   openFence?: FenceSpan,
 ): number {
-  const matches = text.matchAll(/[.!?](?=\s|$)/g);
+  // Include Japanese sentence-ending punctuation. Japanese does not require
+  // whitespace after 。！？, so the ASCII whitespace lookahead must stay
+  // specific to the Latin punctuation cases.
+  const matches = text.matchAll(/(?:[.!?](?=\s|$)|[。！？])/g);
   let sentenceIdx = -1;
   for (const match of matches) {
     const at = match.index ?? -1;

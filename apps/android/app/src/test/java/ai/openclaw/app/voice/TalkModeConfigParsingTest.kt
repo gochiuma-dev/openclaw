@@ -97,6 +97,29 @@ class TalkModeConfigParsingTest {
   }
 
   @Test
+  fun explicitNonRealtimeModeLeavesTheRelay() {
+    // Only an explicit selection moves Talk off the relay. An unset mode keeps the shipped
+    // default — TalkModeManagerTest drives a real session with talk.config = {} and expects
+    // realtime Talk to start, so treating "unset" as native would break every current setup.
+    fun parse(body: String) = TalkModeGatewayConfigParser.parse(json.parseToJsonElement(body).jsonObject)
+
+    assertFalse(parse("""{"talk":{"realtime":{"mode":"stt-tts"}}}""").realtimeRelayEligible)
+    assertFalse(parse("""{"talk":{"realtime":{"mode":"transcription"}}}""").realtimeRelayEligible)
+    assertFalse(parse("""{"talk":{"realtime":{"mode":"STT-TTS"}}}""").realtimeRelayEligible)
+
+    assertTrue(parse("""{"talk":{"realtime":{"mode":"realtime"}}}""").realtimeRelayEligible)
+    assertTrue(parse("""{"talk":{"realtime":{}}}""").realtimeRelayEligible)
+    assertTrue(parse("""{"talk":{}}""").realtimeRelayEligible)
+    assertTrue(parse("""{}""").realtimeRelayEligible)
+
+    // A transport the app cannot open is not a relay either.
+    assertFalse(parse("""{"talk":{"realtime":{"transport":"webrtc"}}}""").realtimeRelayEligible)
+    assertTrue(
+      parse("""{"talk":{"realtime":{"transport":"gateway-relay"}}}""").realtimeRelayEligible,
+    )
+  }
+
+  @Test
   fun gatesAndroidRealtimeRelayFromEffectiveModel() {
     val releasedNative =
       json

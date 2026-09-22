@@ -315,6 +315,11 @@ class TalkModeManager internal constructor(
   private val speechLocale get() = configCache.get().value.speechLocale
   private val realtimeRelayModelSupported get() = configCache.get().value.realtimeRelayModelSupported
 
+  // Matches the shipped default: only an explicit non-realtime `talk.realtime.mode`
+  // moves Talk off the relay. A config read that never landed keeps the old behaviour,
+  // because the parser's own default for an absent config is already relay-eligible.
+  private val realtimeRelayEligible get() = configCache.get().value.realtimeRelayEligible
+
   @Volatile private var pendingRunId: String? = null
   private var pendingFinal: CompletableDeferred<Boolean>? = null
   private val completedRunsLock = Any()
@@ -1016,7 +1021,7 @@ class TalkModeManager internal constructor(
         audioRetirement.await()
         ensureConfigLoaded()
         if (generation != startGeneration.get() || !_isEnabled.value || stopRequested) return@launch
-        if (realtimeRelayModelSupported) {
+        if (realtimeRelayModelSupported && realtimeRelayEligible) {
           startRealtimeRelay(generation)
         } else {
           startNativeTalk(generation)

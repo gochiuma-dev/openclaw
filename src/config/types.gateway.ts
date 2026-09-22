@@ -158,6 +158,19 @@ export type GatewayNodePairingConfig = NonNullable<
   NonNullable<GatewayConfigInput["nodes"]>["pairing"]
 >;
 
+/**
+ * Handling policy for notifications a device node forwards (`notifications.changed`).
+ *
+ * The legacy path queues one system event per notification and wakes the owning
+ * agent for each one, so a steady drip of device notifications costs one agent
+ * turn apiece. The queue behind those events is in-memory and bounded, so
+ * suppressing the wake alone would silently drop events; `log` and `hybrid`
+ * therefore persist every event to a durable log that a scheduled job can read.
+ */
+export type GatewayNodeNotificationsConfig = NonNullable<
+  NonNullable<GatewayConfigInput["nodes"]>["notifications"]
+>;
+
 export type GatewayNodesConfig = NonNullable<GatewayConfigInput["nodes"]> & {
   /** @deprecated Doctor-only legacy input. */
   skills?: { enabled?: boolean };

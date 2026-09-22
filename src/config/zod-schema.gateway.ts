@@ -469,6 +469,13 @@ export const GatewayConfigSchema = z
           .optional(),
         /** Accept node-published skill descriptors (default: true). */
         allowSkills: z.boolean().optional(),
+        notifications: z
+          .strictObject({
+            mode: z.enum(["wake", "log", "hybrid"]).optional(),
+            wakePackages: z.array(z.string()).optional(),
+            logDir: z.string().optional(),
+          })
+          .optional(),
         commands: z
           .strictObject({
             /** Additional node.invoke commands to allow on the gateway. */
