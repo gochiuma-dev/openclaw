@@ -318,6 +318,7 @@ type AnthropicSimpleStreamOptions = SimpleStreamOptions &
   AnthropicContextManagementOptions & {
     authProfileId?: string;
     toolChoice?: AnthropicCompactionOptions["toolChoice"];
+    thinkingDisplay?: AnthropicOptions["thinkingDisplay"];
   };
 
 export const streamSimpleAnthropic: StreamFunction<
@@ -341,6 +342,7 @@ export const streamSimpleAnthropic: StreamFunction<
     authProfileId: options?.authProfileId,
     maxTokens: clampMaxTokensToModel(model, options?.maxTokens ?? model.maxTokens),
     toolChoice: options?.toolChoice,
+    thinkingDisplay: options?.thinkingDisplay,
   };
   const mandatoryAdaptiveThinking = requiresClaudeAdaptiveThinking(model);
   if (options?.reasoning === "off" && !mandatoryAdaptiveThinking) {
