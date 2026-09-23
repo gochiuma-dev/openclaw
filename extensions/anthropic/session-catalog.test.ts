@@ -18,6 +18,7 @@ import {
   registerClaudeSessionDiscovery,
 } from "./session-catalog-registration.js";
 import { listBoundClaudeSessions } from "./session-catalog-runtime.js";
+import { createClaudeCatalogWatchDriver } from "./session-catalog-watch.test-support.js";
 import {
   CLAUDE_CLI_NODE_RUN_COMMAND,
   CLAUDE_SESSIONS_LIST_COMMAND,
