@@ -1,7 +1,6 @@
 // Claude CLI session history importer.
 // Converts Claude project JSONL into OpenClaw transcript-compatible messages.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import {
   asFiniteNumber,
@@ -14,6 +13,7 @@ import {
   stripCliImageTurnContext,
 } from "../agents/cli-image-turn-correlation.js";
 import { hashCliReseedPrompt, parseCliReseedPrompt } from "../agents/cli-runner/reseed-envelope.js";
+import { resolveClaudeCliProjectsDir } from "../agents/command/claude-cli-project-dir.js";
 import type { AgentMessage } from "../agents/runtime/index.js";
 import { redactTranscriptMessage } from "../agents/transcript-redact.js";
 import {
@@ -30,7 +30,6 @@ import {
 import { attachOpenClawTranscriptMeta } from "./session-transcript-readers.js";
 
 export const CLAUDE_CLI_PROVIDER = "claude-cli";
-const CLAUDE_PROJECTS_RELATIVE_DIR = path.join(".claude", "projects");
 
 export type ClaudeCliProjectEntry = {
   type?: unknown;
@@ -83,12 +82,8 @@ export function redactClaudeCliHistoryMessage(
   ) as unknown as TranscriptLikeMessage;
 }
 
-function resolveHistoryHomeDir(homeDir?: string): string {
-  return normalizeOptionalString(homeDir) || process.env.HOME || os.homedir();
-}
-
 function resolveClaudeProjectsDir(homeDir?: string): string {
-  return path.join(resolveHistoryHomeDir(homeDir), CLAUDE_PROJECTS_RELATIVE_DIR);
+  return resolveClaudeCliProjectsDir(homeDir);
 }
 
 function normalizeClaudeCliSessionId(value: string): string | undefined {
