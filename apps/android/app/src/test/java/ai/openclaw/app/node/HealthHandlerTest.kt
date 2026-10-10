@@ -1,7 +1,10 @@
 package ai.openclaw.app.node
 
 import android.content.Context
+import androidx.health.connect.client.records.ExerciseRoute
+import androidx.health.connect.client.records.ExerciseRouteResult
 import androidx.health.connect.client.records.ExerciseSessionRecord
+import androidx.health.connect.client.units.Length
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
@@ -11,6 +14,7 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -297,6 +301,152 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
     assertEquals("OTHER_999", healthExerciseTypeName(999))
   }
 
+  private val routedWorkouts =
+    listOf(
+      HealthExerciseSession(
+        Instant.parse("2026-10-10T00:00:00Z"),
+        Instant.parse("2026-10-10T00:30:00Z"),
+        "com.fitbit.FitbitMobile",
+        type = "RUNNING",
+        route =
+          HealthRoute(
+            HealthRouteStatus.Data,
+            listOf(
+              HealthRoutePoint(Instant.parse("2026-10-10T00:00:00Z"), 0.0, 0.0, altitudeMeters = 12.5, horizontalAccuracyMeters = 4.0),
+              HealthRoutePoint(Instant.parse("2026-10-10T00:30:00Z"), 0.0, 0.01),
+            ),
+          ),
+      ),
+      HealthExerciseSession(
+        Instant.parse("2026-10-10T01:00:00Z"),
+        Instant.parse("2026-10-10T01:20:00Z"),
+        "com.fitbit.FitbitMobile",
+        type = "WALKING",
+        route = HealthRoute(HealthRouteStatus.ConsentRequired),
+      ),
+      HealthExerciseSession(
+        Instant.parse("2026-10-10T02:00:00Z"),
+        Instant.parse("2026-10-10T02:40:00Z"),
+        "com.fitbit.FitbitMobile",
+        type = "STRENGTH_TRAINING",
+      ),
+    )
+
+  private val routeGrant =
+    HealthConnectPermissions.metricReads + HealthConnectPermissions.READ_IN_BACKGROUND + HealthConnectPermissions.READ_EXERCISE_ROUTES
+
+  @Test
+  fun routeStatusFollowsTheRouteResultAndHidesPointsByDefault() =
+    runTest {
+      val source = FakeHealthDataSource(granted = routeGrant, exercise = routedWorkouts)
+      val workouts = workouts(HealthHandler(appContext(), source, clock).handleHealthSummary(null))
+
+      assertEquals(listOf("data", "consent_required", "none"), workouts.map { it["routeStatus"]?.jsonPrimitive?.content })
+      assertEquals(2, workouts[0]["routePointCount"]?.jsonPrimitive?.int)
+      // 0.01° of longitude on the equator.
+      assertEquals(1112L, workouts[0]["routeDistanceMeters"]?.jsonPrimitive?.long)
+      assertNull(workouts[0]["route"])
+      for (workout in workouts.drop(1)) {
+        assertNull(workout["routePointCount"])
+        assertNull(workout["routeDistanceMeters"])
+        assertNull(workout["route"])
+      }
+    }
+
+  @Test
+  fun includeRoutesAddsThePointsOfDataRoutesOnly() =
+    runTest {
+      val source = FakeHealthDataSource(granted = routeGrant, exercise = routedWorkouts)
+      val workouts =
+        workouts(
+          HealthHandler(appContext(), source, clock)
+            .handleHealthSummary("""{"period":"range","startDate":"2026-10-09","endDate":"2026-10-10","includeRoutes":true}"""),
+        )
+
+      assertEquals(
+        Json.parseToJsonElement(
+          """
+          [{"t":"2026-10-10T00:00:00Z","lat":0.0,"lon":0.0,"alt":12.5,"acc":4.0},
+           {"t":"2026-10-10T00:30:00Z","lat":0.0,"lon":0.01}]
+          """,
+        ),
+        workouts[0]["route"],
+      )
+      assertNull(workouts[1]["route"])
+      assertNull(workouts[2]["route"])
+    }
+
+  @Test
+  fun routeFieldsStayAbsentWithoutTheRoutePermission() =
+    runTest {
+      val source = FakeHealthDataSource(exercise = routedWorkouts)
+      val workouts =
+        workouts(HealthHandler(appContext(), source, clock).handleHealthSummary("""{"includeRoutes":true}"""))
+
+      assertEquals(3, workouts.size)
+      for (workout in workouts) {
+        for (key in listOf("routeStatus", "routePointCount", "routeDistanceMeters", "route")) {
+          assertFalse(key, key in workout)
+        }
+      }
+    }
+
+  @Test
+  fun routeResultsMapToTheThreeStatuses() {
+    val route =
+      healthRoute(
+        ExerciseRouteResult.Data(
+          ExerciseRoute(
+            listOf(
+              ExerciseRoute.Location(
+                time = Instant.parse("2026-10-10T00:00:00Z"),
+                latitude = 35.0,
+                longitude = 139.0,
+                horizontalAccuracy = Length.meters(3.0),
+                altitude = Length.meters(40.0),
+              ),
+            ),
+          ),
+        ),
+      )
+    assertEquals(HealthRouteStatus.Data, route.status)
+    assertEquals(
+      listOf(HealthRoutePoint(Instant.parse("2026-10-10T00:00:00Z"), 35.0, 139.0, altitudeMeters = 40.0, horizontalAccuracyMeters = 3.0)),
+      route.points,
+    )
+    assertEquals(HealthRoute(HealthRouteStatus.ConsentRequired), healthRoute(ExerciseRouteResult.ConsentRequired()))
+    assertEquals(HealthRoute(HealthRouteStatus.None), healthRoute(ExerciseRouteResult.NoData()))
+  }
+
+  @Test
+  fun routeDistanceIsHaversineAlongThePoints() {
+    fun point(
+      lat: Double,
+      lon: Double,
+    ) = HealthRoutePoint(Instant.parse("2026-10-10T00:00:00Z"), lat, lon)
+
+    assertEquals(0.0, routeDistanceMeters(emptyList()), 0.0)
+    assertEquals(0.0, routeDistanceMeters(listOf(point(35.0, 139.0))), 0.0)
+    // One degree of latitude on the mean Earth radius, walked out and back.
+    assertEquals(2 * 111_195.08, routeDistanceMeters(listOf(point(0.0, 0.0), point(1.0, 0.0), point(0.0, 0.0))), 0.1)
+    // Tokyo Station → Shinjuku Station, about 6.1 km in a straight line.
+    assertEquals(6_134.4, routeDistanceMeters(listOf(point(35.681236, 139.767125), point(35.690921, 139.700258))), 1.0)
+  }
+
+  @Test
+  fun routePermissionIsRequestedOnlyWhereHealthConnectKnowsIt() {
+    assertTrue(
+      HealthConnectPermissions.READ_EXERCISE_ROUTES in
+        HealthConnectPermissions.requestSet(backgroundSupported = true, historySupported = true, routesSupported = true),
+    )
+    assertFalse(
+      HealthConnectPermissions.READ_EXERCISE_ROUTES in
+        HealthConnectPermissions.requestSet(backgroundSupported = true, historySupported = true, routesSupported = false),
+    )
+    assertTrue(parseHealthSummaryRequest("""{"includeRoutes":true}""", clock).includeRoutes)
+    assertFalse(parseHealthSummaryRequest(null, clock).includeRoutes)
+  }
+
   @Test
   fun mergedDurationClipsAndMergesOverlaps() {
     val merged =
@@ -316,6 +466,11 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
     assertTrue(result.error?.message, result.ok)
     return Json.parseToJsonElement(result.payloadJson ?: error("missing payload")).jsonObject
   }
+
+  private fun workouts(result: ai.openclaw.app.gateway.GatewaySession.InvokeResult): List<JsonObject> =
+    payload(result)["workouts"]
+      ?.jsonArray
+      ?.map { it.jsonObject } ?: error("missing workouts")
 
   private fun window(
     start: String,

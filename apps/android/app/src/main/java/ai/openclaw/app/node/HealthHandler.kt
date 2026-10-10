@@ -2,9 +2,11 @@ package ai.openclaw.app.node
 
 import ai.openclaw.app.gateway.GatewaySession
 import android.content.Context
+import android.os.Build
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.HealthConnectFeatures
 import androidx.health.connect.client.aggregate.AggregateMetric
+import androidx.health.connect.client.records.ExerciseRouteResult
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.Record
@@ -28,13 +30,18 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeParseException
 import java.time.temporal.ChronoUnit
+import kotlin.math.asin
+import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
+import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.reflect.KClass
 
 private const val HEALTH_RANGE_MAX_DAYS = 31L
 private const val HEALTH_SLEEP_SESSION_LIMIT = 20
 private const val HEALTH_READ_PAGE_LIMIT = 20
+private const val EARTH_MEAN_RADIUS_METERS = 6_371_008.8
 
 // A night that ends after midnight starts the day before; read one day back before clipping.
 private val HEALTH_SLEEP_LOOKBACK: Duration = Duration.ofHours(24)
@@ -59,18 +66,23 @@ internal object HealthConnectPermissions {
   const val READ_IN_BACKGROUND = "android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND"
   const val READ_HISTORY = "android.permission.health.READ_HEALTH_DATA_HISTORY"
 
+  /** Lets health.summary read routes other apps wrote without a per-session consent dialog. */
+  const val READ_EXERCISE_ROUTES = "android.permission.health.READ_EXERCISE_ROUTES"
+
   val metricReads: Set<String> = HealthMetric.entries.map { it.readPermission }.toSet()
 
   /** Data reads plus the extended-access permissions the provider actually supports. */
   fun requestSet(
     backgroundSupported: Boolean,
     historySupported: Boolean,
+    routesSupported: Boolean = false,
   ): Set<String> =
     buildSet {
       addAll(metricReads)
       // Gateway invokes usually arrive while the app is backgrounded behind the node service.
       if (backgroundSupported) add(READ_IN_BACKGROUND)
       if (historySupported) add(READ_HISTORY)
+      if (routesSupported) add(READ_EXERCISE_ROUTES)
     }
 }
 
@@ -78,6 +90,8 @@ internal object HealthConnectPermissions {
 internal data class HealthExtendedAccess(
   val backgroundSupported: Boolean,
   val historySupported: Boolean,
+  /** READ_EXERCISE_ROUTES exists from Android 15's platform Health Connect. */
+  val routesSupported: Boolean = false,
 )
 
 internal enum class HealthConnectAvailability {
@@ -102,6 +116,8 @@ internal data class HealthSummaryRequest(
   val period: String,
   val window: HealthWindow,
   val days: List<HealthDay>,
+  /** Route points are opt-in; a month of GPS fixes would dwarf the rest of the payload. */
+  val includeRoutes: Boolean = false,
 )
 
 internal data class HealthAggregate(
@@ -128,6 +144,29 @@ internal data class HealthExerciseSession(
   /** Readable exercise type from [healthExerciseTypeName]. */
   val type: String = healthExerciseTypeName(ExerciseSessionRecord.EXERCISE_TYPE_OTHER_WORKOUT),
   val title: String? = null,
+  val route: HealthRoute = HealthRoute(HealthRouteStatus.None),
+)
+
+/** Mirrors ExerciseRouteResult: Data, ConsentRequired, NoData. */
+internal enum class HealthRouteStatus(
+  val key: String,
+) {
+  Data("data"),
+  ConsentRequired("consent_required"),
+  None("none"),
+}
+
+internal data class HealthRoutePoint(
+  val time: Instant,
+  val latitude: Double,
+  val longitude: Double,
+  val altitudeMeters: Double? = null,
+  val horizontalAccuracyMeters: Double? = null,
+)
+
+internal data class HealthRoute(
+  val status: HealthRouteStatus,
+  val points: List<HealthRoutePoint> = emptyList(),
 )
 
 /** Health Connect seam for the provider and tests. */
@@ -175,6 +214,7 @@ internal object HealthConnectDataSource : HealthDataSource {
     if (availability(context) != HealthConnectAvailability.Available) return HealthExtendedAccess(false, false)
     val features = HealthConnectClient.getOrCreate(context).features
     return HealthExtendedAccess(
+      routesSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM,
       backgroundSupported =
         features.getFeatureStatus(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_IN_BACKGROUND) ==
           HealthConnectFeatures.FEATURE_STATUS_AVAILABLE,
@@ -284,6 +324,7 @@ internal object HealthConnectDataSource : HealthDataSource {
         dataOrigin = record.metadata.dataOrigin.packageName,
         type = healthExerciseTypeName(record.exerciseType),
         title = record.title?.trim()?.ifEmpty { null },
+        route = healthRoute(record.exerciseRouteResult),
       )
     }
 
@@ -420,13 +461,19 @@ class HealthHandler internal constructor(
         exerciseSessions?.forEach { session -> session.dataOrigin?.let(::add) }
       }
     val zone = clock.zone
+    val routes =
+      when {
+        HealthConnectPermissions.READ_EXERCISE_ROUTES !in granted -> RouteOutput.Hidden
+        request.includeRoutes -> RouteOutput.WithPoints
+        else -> RouteOutput.Summary
+      }
 
     return buildJsonObject {
       put("period", request.period)
       put("startISO", request.window.start.toString())
       put("endISO", request.window.end.toString())
       put("timeZoneIdentifier", zone.id)
-      putMetrics(request.window, total, sleepSessions, exerciseSessions)
+      putMetrics(request.window, total, sleepSessions, exerciseSessions, routes)
       if (request.period != "today" && request.days.isNotEmpty()) {
         val firstDay = request.days.first()
         val lastDay = request.days.last()
@@ -465,7 +512,7 @@ class HealthHandler internal constructor(
                   put("date", day.date.toString())
                   put("startISO", day.window.start.toString())
                   put("endISO", day.window.end.toString())
-                  putMetrics(day.window, aggregate, sleepSessions, exerciseSessions)
+                  putMetrics(day.window, aggregate, sleepSessions, exerciseSessions, routes)
                 },
               )
             }
@@ -496,6 +543,7 @@ class HealthHandler internal constructor(
     aggregate: HealthAggregate,
     sleepSessions: List<HealthSleepSession>?,
     exerciseSessions: List<HealthExerciseSession>?,
+    routes: RouteOutput,
   ) {
     aggregate.stepCount?.let { put("stepCount", it) }
     sleepSessions
@@ -530,6 +578,7 @@ class HealthHandler internal constructor(
                 put("endISO", workout.end.toString())
                 put("durationMinutes", roundedMinutes(Duration.between(workout.start, workout.end)))
                 workout.dataOrigin?.let { put("dataOrigin", it) }
+                putRoute(workout.route, routes)
               },
             )
           }
@@ -537,6 +586,38 @@ class HealthHandler internal constructor(
       )
     }
   }
+
+  // Without READ_EXERCISE_ROUTES every foreign route reads as ConsentRequired, so stay silent
+  // rather than report a status that only reflects the missing grant.
+  private fun JsonObjectBuilder.putRoute(
+    route: HealthRoute,
+    output: RouteOutput,
+  ) {
+    if (output == RouteOutput.Hidden) return
+    put("routeStatus", route.status.key)
+    if (route.status != HealthRouteStatus.Data) return
+    put("routePointCount", route.points.size)
+    put("routeDistanceMeters", routeDistanceMeters(route.points).roundToLong())
+    if (output != RouteOutput.WithPoints) return
+    put(
+      "route",
+      buildJsonArray {
+        for (point in route.points) {
+          add(
+            buildJsonObject {
+              put("t", point.time.toString())
+              put("lat", point.latitude)
+              put("lon", point.longitude)
+              point.altitudeMeters?.let { put("alt", it) }
+              point.horizontalAccuracyMeters?.let { put("acc", it) }
+            },
+          )
+        }
+      },
+    )
+  }
+
+  private enum class RouteOutput { Hidden, Summary, WithPoints }
 
   /** Returns true while the Health Connect provider can be queried on this phone. */
   fun isAvailable(): Boolean = dataSource.availability(appContext) == HealthConnectAvailability.Available
@@ -546,6 +627,7 @@ class HealthHandler internal constructor(
  * Parses health.summary params. `{"period":"today"}` (also the default) matches iOS; Android also
  * accepts `yesterday`, `{"period":"day","date":"YYYY-MM-DD"}`, and
  * `{"period":"range","startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD"}` (inclusive, up to 31 days).
+ * `"includeRoutes":true` adds each workout's GPS points.
  */
 internal fun parseHealthSummaryRequest(
   paramsJson: String?,
@@ -559,7 +641,8 @@ internal fun parseHealthSummaryRequest(
     }
   val zone = clock.zone
   val now = clock.instant()
-  val today = LocalDate.ofInstant(now, zone)
+  // LocalDate.ofInstant is API 34; minSdk is 31.
+  val today = now.atZone(zone).toLocalDate()
   val date = parseHealthDate(params, "date")
   val period = parseJsonString(params, "period")?.trim()?.ifEmpty { null } ?: if (date != null) "day" else "today"
 
@@ -604,6 +687,7 @@ internal fun parseHealthSummaryRequest(
     period = period,
     window = HealthWindow(days.first().window.start, days.last().window.end),
     days = days,
+    includeRoutes = parseJsonBooleanFlag(params, "includeRoutes") ?: false,
   )
 }
 
@@ -723,5 +807,44 @@ private val HEALTH_EXERCISE_TYPE_NAMES: Map<Int, String> =
 
 /** Readable name for an ExerciseSessionRecord exercise type; types newer than this table become `OTHER_<n>`. */
 internal fun healthExerciseTypeName(type: Int): String = HEALTH_EXERCISE_TYPE_NAMES[type] ?: "OTHER_$type"
+
+// Other apps' routes come back as ConsentRequired without READ_EXERCISE_ROUTES, and always
+// while OpenClaw is in the background.
+internal fun healthRoute(result: ExerciseRouteResult): HealthRoute =
+  when (result) {
+    is ExerciseRouteResult.Data -> {
+      HealthRoute(
+        HealthRouteStatus.Data,
+        result.exerciseRoute.route.map { location ->
+          HealthRoutePoint(
+            time = location.time,
+            latitude = location.latitude,
+            longitude = location.longitude,
+            altitudeMeters = location.altitude?.inMeters,
+            horizontalAccuracyMeters = location.horizontalAccuracy?.inMeters,
+          )
+        },
+      )
+    }
+
+    is ExerciseRouteResult.ConsentRequired -> {
+      HealthRoute(HealthRouteStatus.ConsentRequired)
+    }
+
+    else -> {
+      HealthRoute(HealthRouteStatus.None)
+    }
+  }
+
+/** Great-circle length of the route in order, in meters (haversine on the mean Earth radius). */
+internal fun routeDistanceMeters(points: List<HealthRoutePoint>): Double =
+  points.zipWithNext().sumOf { (a, b) ->
+    val lat1 = Math.toRadians(a.latitude)
+    val lat2 = Math.toRadians(b.latitude)
+    val dLat = lat2 - lat1
+    val dLon = Math.toRadians(b.longitude - a.longitude)
+    val h = sin(dLat / 2) * sin(dLat / 2) + cos(lat1) * cos(lat2) * sin(dLon / 2) * sin(dLon / 2)
+    2 * EARTH_MEAN_RADIUS_METERS * asin(sqrt(h.coerceIn(0.0, 1.0)))
+  }
 
 private fun roundedMinutes(duration: Duration): Int = (duration.toMillis() / 60_000.0).roundToInt()

@@ -88,7 +88,11 @@ internal fun HealthConnectSettingsPanel(viewModel: MainViewModel) {
   fun requestAccess() {
     val access = HealthConnectDataSource.extendedAccessSupport(context)
     permissionLauncher.launch(
-      HealthConnectPermissions.requestSet(backgroundSupported = access.backgroundSupported, historySupported = access.historySupported),
+      HealthConnectPermissions.requestSet(
+        backgroundSupported = access.backgroundSupported,
+        historySupported = access.historySupported,
+        routesSupported = access.routesSupported,
+      ),
     )
   }
 
