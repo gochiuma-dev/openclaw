@@ -19,6 +19,7 @@ enum class OpenClawCapability(
   CallLog("callLog"),
   VoiceWake("voiceWake"),
   MobileUI("mobileUI"),
+  Health("health"),
 }
 
 enum class OpenClawCameraCommand(
@@ -164,6 +165,17 @@ enum class OpenClawCallLogCommand(
 
   companion object {
     const val NamespacePrefix: String = "callLog."
+  }
+}
+
+enum class OpenClawHealthCommand(
+  val rawValue: String,
+) {
+  Summary("health.summary"),
+  ;
+
+  companion object {
+    const val NamespacePrefix: String = "health."
   }
 }
 

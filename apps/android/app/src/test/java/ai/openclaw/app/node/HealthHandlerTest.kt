@@ -1,0 +1,259 @@
+package ai.openclaw.app.node
+
+import android.content.Context
+import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.time.Clock
+import java.time.Duration
+import java.time.Instant
+import java.time.ZoneId
+
+class HealthHandlerTest : NodeHandlerRobolectricTest() {
+  // 2026-10-10 12:00 in Tokyo; local midnight is 2026-10-09T15:00:00Z.
+  private val clock = Clock.fixed(Instant.parse("2026-10-10T03:00:00Z"), ZoneId.of("Asia/Tokyo"))
+
+  private val lastNight =
+    HealthSleepSession(
+      start = Instant.parse("2026-10-09T14:00:00Z"),
+      end = Instant.parse("2026-10-09T21:00:00Z"),
+      asleep =
+        listOf(
+          window("2026-10-09T14:10:00Z", "2026-10-09T17:00:00Z"),
+          // Overlapping stages from a second writer must not double count.
+          window("2026-10-09T16:30:00Z", "2026-10-09T17:00:00Z"),
+          window("2026-10-09T17:20:00Z", "2026-10-09T21:00:00Z"),
+        ),
+      dataOrigin = "com.fitbit.FitbitMobile",
+    )
+
+  private val workouts =
+    listOf(
+      HealthExerciseSession(Instant.parse("2026-10-10T00:00:00Z"), Instant.parse("2026-10-10T00:45:00Z"), "com.fitbit.FitbitMobile"),
+      // Started before local midnight: belongs to yesterday, like HealthKit's strict start date.
+      HealthExerciseSession(Instant.parse("2026-10-09T14:30:00Z"), Instant.parse("2026-10-09T15:30:00Z"), "com.fitbit.FitbitMobile"),
+    )
+
+  @Test
+  fun todaySummaryUsesTheIosPayloadShape() =
+    runTest {
+      val source =
+        FakeHealthDataSource(
+          aggregateFor = {
+            HealthAggregate(
+              stepCount = 4321,
+              restingHeartRateBpm = 58.46,
+              heartRateAvgBpm = 72,
+              heartRateMinBpm = 50,
+              heartRateMaxBpm = 130,
+              dataOrigins = setOf("com.fitbit.FitbitMobile"),
+            )
+          },
+          sleep = listOf(lastNight),
+          exercise = workouts,
+        )
+
+      for (params in listOf(null, "{}", """{"period":"today"}""")) {
+        val result = HealthHandler(appContext(), source, clock).handleHealthSummary(params)
+
+        assertTrue(result.error?.message, result.ok)
+        assertEquals(
+          Json.parseToJsonElement(
+            """
+            {"period":"today","startISO":"2026-10-09T15:00:00Z","endISO":"2026-10-10T03:00:00Z",
+             "timeZoneIdentifier":"Asia/Tokyo","stepCount":4321,"sleepDurationMinutes":340,
+             "restingHeartRateBpm":58.5,"workoutCount":1,"workoutDurationMinutes":45,
+             "heartRateAvgBpm":72,"heartRateMinBpm":50,"heartRateMaxBpm":130,
+             "sleepSessions":[{"startISO":"2026-10-09T14:00:00Z","endISO":"2026-10-09T21:00:00Z","asleepMinutes":390}],
+             "backgroundAccess":true,"dataOrigins":["com.fitbit.FitbitMobile"],"source":"healthConnect"}
+            """,
+          ),
+          Json.parseToJsonElement(result.payloadJson ?: error("missing payload")),
+        )
+      }
+    }
+
+  @Test
+  fun partialGrantReadsOnlyAllowedMetricsAndNamesTheRest() =
+    runTest {
+      val source =
+        FakeHealthDataSource(
+          granted = setOf(HealthMetric.Steps.readPermission),
+          aggregateFor = { HealthAggregate(stepCount = 10) },
+          sleep = listOf(lastNight),
+          exercise = workouts,
+        )
+
+      val payload = payload(HealthHandler(appContext(), source, clock).handleHealthSummary("""{"period":"today"}"""))
+
+      assertEquals(listOf(setOf(HealthMetric.Steps)), source.aggregateMetrics)
+      assertTrue(source.sleepQueries.isEmpty())
+      assertTrue(source.exerciseQueries.isEmpty())
+      assertEquals(10, payload["stepCount"]?.jsonPrimitive?.int)
+      assertNull(payload["sleepDurationMinutes"])
+      assertNull(payload["sleepSessions"])
+      assertEquals(
+        listOf("sleep", "heartRate", "restingHeartRate", "exercise"),
+        payload["missingPermissions"]?.jsonArray?.map { it.jsonPrimitive.content },
+      )
+      assertEquals("false", payload["backgroundAccess"]?.jsonPrimitive?.content)
+    }
+
+  @Test
+  fun rangeAddsPerDayTotalsAndSplitsSleepAtMidnight() =
+    runTest {
+      val source =
+        FakeHealthDataSource(
+          aggregateFor = { window -> HealthAggregate(stepCount = Duration.between(window.start, window.end).toHours()) },
+          sleep = listOf(lastNight),
+          exercise = workouts,
+        )
+
+      val payload =
+        payload(
+          HealthHandler(appContext(), source, clock)
+            .handleHealthSummary("""{"period":"range","startDate":"2026-10-08","endDate":"2026-10-10"}"""),
+        )
+
+      assertEquals("2026-10-07T15:00:00Z", payload["startISO"]?.jsonPrimitive?.content)
+      assertEquals("2026-10-10T03:00:00Z", payload["endISO"]?.jsonPrimitive?.content)
+      assertEquals("2026-10-08", payload["startDate"]?.jsonPrimitive?.content)
+      assertEquals("2026-10-10", payload["endDate"]?.jsonPrimitive?.content)
+      assertEquals(60, payload["stepCount"]?.jsonPrimitive?.int)
+      assertEquals(390, payload["sleepDurationMinutes"]?.jsonPrimitive?.int)
+      assertEquals(2, payload["workoutCount"]?.jsonPrimitive?.int)
+      val days = payload["days"]?.jsonArray?.map { it.jsonObject } ?: error("missing days")
+      assertEquals(listOf("2026-10-08", "2026-10-09", "2026-10-10"), days.map { it["date"]?.jsonPrimitive?.content })
+      assertEquals(listOf(24, 24, 12), days.map { it["stepCount"]?.jsonPrimitive?.int })
+      assertEquals(listOf(null, 50, 340), days.map { it["sleepDurationMinutes"]?.jsonPrimitive?.int })
+      assertEquals(listOf(null, 1, 1), days.map { it["workoutCount"]?.jsonPrimitive?.int })
+    }
+
+  @Test
+  fun yesterdayAndSingleDayCoverWholeLocalDays() {
+    val yesterday = parseHealthSummaryRequest("""{"period":"yesterday"}""", clock)
+    assertEquals(window("2026-10-08T15:00:00Z", "2026-10-09T15:00:00Z"), yesterday.window)
+
+    val day = parseHealthSummaryRequest("""{"date":"2026-10-01"}""", clock)
+    assertEquals("day", day.period)
+    assertEquals(window("2026-09-30T15:00:00Z", "2026-10-01T15:00:00Z"), day.window)
+  }
+
+  @Test
+  fun rejectsUnsupportedRequests() =
+    runTest {
+      val handler = HealthHandler(appContext(), FakeHealthDataSource(), clock)
+      for (params in listOf(
+        "[]",
+        """{"period":"week"}""",
+        """{"period":"day"}""",
+        """{"period":"day","date":"2026-10-11"}""",
+        """{"period":"day","date":"10/09/2026"}""",
+        """{"period":"range","startDate":"2026-10-09","endDate":"2026-10-08"}""",
+        """{"period":"range","startDate":"2026-09-01","endDate":"2026-10-10"}""",
+      )) {
+        assertEquals(params, "INVALID_REQUEST", handler.handleHealthSummary(params).error?.code)
+      }
+    }
+
+  @Test
+  fun explainsMissingProviderAndPermissions() =
+    runTest {
+      val noGrant = HealthHandler(appContext(), FakeHealthDataSource(granted = emptySet()), clock).handleHealthSummary(null)
+      assertEquals("HEALTH_PERMISSION_REQUIRED", noGrant.error?.code)
+
+      val unavailable =
+        HealthHandler(appContext(), FakeHealthDataSource(availability = HealthConnectAvailability.Unavailable), clock)
+          .handleHealthSummary(null)
+      assertEquals("HEALTH_CONNECT_UNAVAILABLE", unavailable.error?.code)
+
+      val update =
+        HealthHandler(appContext(), FakeHealthDataSource(availability = HealthConnectAvailability.UpdateRequired), clock)
+          .handleHealthSummary(null)
+      assertEquals("HEALTH_CONNECT_UPDATE_REQUIRED", update.error?.code)
+
+      val refused =
+        HealthHandler(
+          appContext(),
+          FakeHealthDataSource(aggregateFor = { throw SecurityException("background read") }),
+          clock,
+        ).handleHealthSummary(null)
+      assertFalse(refused.ok)
+      assertEquals("HEALTH_PERMISSION_REQUIRED", refused.error?.code)
+    }
+
+  @Test
+  fun mergedDurationClipsAndMergesOverlaps() {
+    val merged =
+      mergedDuration(
+        listOf(
+          window("2026-10-10T00:00:00Z", "2026-10-10T01:00:00Z"),
+          window("2026-10-10T00:30:00Z", "2026-10-10T02:00:00Z"),
+          window("2026-10-10T03:00:00Z", "2026-10-10T05:00:00Z"),
+        ),
+        window("2026-10-10T00:15:00Z", "2026-10-10T04:00:00Z"),
+      )
+    assertEquals(Duration.ofMinutes(105 + 60), merged)
+    assertNull(mergedDuration(emptyList(), window("2026-10-10T00:00:00Z", "2026-10-10T01:00:00Z")))
+  }
+
+  private fun payload(result: ai.openclaw.app.gateway.GatewaySession.InvokeResult): JsonObject {
+    assertTrue(result.error?.message, result.ok)
+    return Json.parseToJsonElement(result.payloadJson ?: error("missing payload")).jsonObject
+  }
+
+  private fun window(
+    start: String,
+    end: String,
+  ) = HealthWindow(Instant.parse(start), Instant.parse(end))
+}
+
+private class FakeHealthDataSource(
+  private val availability: HealthConnectAvailability = HealthConnectAvailability.Available,
+  private val granted: Set<String> = HealthConnectPermissions.metricReads + HealthConnectPermissions.READ_IN_BACKGROUND,
+  private val aggregateFor: (HealthWindow) -> HealthAggregate = { HealthAggregate() },
+  private val sleep: List<HealthSleepSession> = emptyList(),
+  private val exercise: List<HealthExerciseSession> = emptyList(),
+) : HealthDataSource {
+  val aggregateMetrics = mutableListOf<Set<HealthMetric>>()
+  val sleepQueries = mutableListOf<HealthWindow>()
+  val exerciseQueries = mutableListOf<HealthWindow>()
+
+  override fun availability(context: Context): HealthConnectAvailability = availability
+
+  override suspend fun grantedPermissions(context: Context): Set<String> = granted
+
+  override suspend fun aggregate(
+    context: Context,
+    window: HealthWindow,
+    metrics: Set<HealthMetric>,
+  ): HealthAggregate {
+    aggregateMetrics += metrics
+    return aggregateFor(window)
+  }
+
+  override suspend fun sleepSessions(
+    context: Context,
+    window: HealthWindow,
+  ): List<HealthSleepSession> {
+    sleepQueries += window
+    return sleep
+  }
+
+  override suspend fun exerciseSessions(
+    context: Context,
+    window: HealthWindow,
+  ): List<HealthExerciseSession> {
+    exerciseQueries += window
+    return exercise
+  }
+}

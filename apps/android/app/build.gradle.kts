@@ -455,6 +455,8 @@ dependencies {
   implementation(libs.androidx.room.runtime)
   ksp(libs.androidx.room.compiler)
   implementation(libs.androidx.exifinterface)
+  // Health Connect (health.summary): read-only aggregates computed on the phone.
+  implementation(libs.androidx.health.connect.client)
   implementation(libs.okhttp)
   implementation(libs.media3.datasource.okhttp)
   implementation(libs.media3.exoplayer)

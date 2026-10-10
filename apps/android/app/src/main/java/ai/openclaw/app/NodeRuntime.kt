@@ -73,6 +73,7 @@ import ai.openclaw.app.node.ContactsHandler
 import ai.openclaw.app.node.DebugHandler
 import ai.openclaw.app.node.DeviceHandler
 import ai.openclaw.app.node.DeviceNotificationListenerService
+import ai.openclaw.app.node.HealthHandler
 import ai.openclaw.app.node.InvokeDispatcher
 import ai.openclaw.app.node.LocationCaptureManager
 import ai.openclaw.app.node.LocationHandler
@@ -1271,6 +1272,11 @@ class NodeRuntime private constructor(
     )
 
   private val mobileUiHandler = MobileUiHandler()
+
+  private val healthHandler: HealthHandler =
+    HealthHandler(
+      appContext = appContext,
+    )
   private var lastMobileUiConnected = mobileUiHandler.isConnected.value
 
   private val invokeDispatcher: InvokeDispatcher =
@@ -1298,6 +1304,7 @@ class NodeRuntime private constructor(
       debugHandler = debugHandler,
       callLogHandler = callLogHandler,
       mobileUiHandler = mobileUiHandler,
+      healthHandler = healthHandler,
       isForeground = { _isForeground.value },
       cameraEnabled = { cameraEnabled.value },
       locationEnabled = { locationMode.value != LocationMode.Off },
@@ -1313,6 +1320,8 @@ class NodeRuntime private constructor(
       mobileUiAvailable = {
         SensitiveFeatureConfig.accessibilityControlEnabled && mobileUiHandler.isConnected.value
       },
+      // Advertised only after the user opts in, like iOS Apple Health summaries.
+      healthSummaryAvailable = { healthSummaryEnabled.value && healthHandler.isAvailable() },
       voiceWakeAvailable = ::isVoiceWakeCapabilityEnabled,
     )
 
@@ -3191,6 +3200,7 @@ class NodeRuntime private constructor(
   val activeGatewayStableId: StateFlow<String?> = prefs.gatewayRegistry.activeStableId
   val connectedGatewayStableIds: StateFlow<List<String>> = prefs.gatewayRegistry.connectedStableIds
   val installedAppsSharingEnabled: StateFlow<Boolean> = prefs.installedAppsSharingEnabled
+  val healthSummaryEnabled: StateFlow<Boolean> = prefs.healthSummaryEnabled
   val notificationForwardingEnabled: StateFlow<Boolean> = prefs.notificationForwardingEnabled
   val notificationForwardingMode: StateFlow<NotificationPackageFilterMode> =
     prefs.notificationForwardingMode
@@ -3826,6 +3836,12 @@ class NodeRuntime private constructor(
   fun revokeInstalledAppsDisclosureConsent() {
     if (!prefs.installedAppsSharingEnabled.value) return
     prefs.revokeInstalledAppsDisclosureConsent()
+    refreshAcceptedGatewayConnection(refreshOperator = false)
+  }
+
+  fun setHealthSummaryEnabled(value: Boolean) {
+    if (prefs.healthSummaryEnabled.value == value) return
+    prefs.setHealthSummaryEnabled(value)
     refreshAcceptedGatewayConnection(refreshOperator = false)
   }
 

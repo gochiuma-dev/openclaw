@@ -1492,6 +1492,7 @@ private fun PhoneCapabilitiesScreen(
     if (SensitiveFeatureConfig.accessibilityControlEnabled) {
       FlavorPhoneCapabilitiesSettings(viewModel)
     }
+    HealthConnectSettingsPanel(viewModel)
     ClawPanel(verticalArrangement = Arrangement.spacedBy(8.dp)) {
       Text(text = nativeString("Location"), style = ClawTheme.type.section, color = ClawTheme.colors.text)
       ClawSegmentedControl(
