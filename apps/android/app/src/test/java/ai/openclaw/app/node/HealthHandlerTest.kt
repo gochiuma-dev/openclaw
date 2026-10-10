@@ -1,6 +1,7 @@
 package ai.openclaw.app.node
 
 import android.content.Context
+import androidx.health.connect.client.records.ExerciseSessionRecord
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
@@ -40,9 +41,20 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
 
   private val workouts =
     listOf(
-      HealthExerciseSession(Instant.parse("2026-10-10T00:00:00Z"), Instant.parse("2026-10-10T00:45:00Z"), "com.fitbit.FitbitMobile"),
+      HealthExerciseSession(
+        Instant.parse("2026-10-10T00:00:00Z"),
+        Instant.parse("2026-10-10T00:45:00Z"),
+        "com.fitbit.FitbitMobile",
+        type = "RUNNING",
+        title = "Morning run",
+      ),
       // Started before local midnight: belongs to yesterday, like HealthKit's strict start date.
-      HealthExerciseSession(Instant.parse("2026-10-09T14:30:00Z"), Instant.parse("2026-10-09T15:30:00Z"), "com.fitbit.FitbitMobile"),
+      HealthExerciseSession(
+        Instant.parse("2026-10-09T14:30:00Z"),
+        Instant.parse("2026-10-09T15:30:00Z"),
+        "com.google.android.apps.fitness",
+        type = "WALKING",
+      ),
     )
 
   @Test
@@ -75,10 +87,12 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
              "timeZoneIdentifier":"Asia/Tokyo","stepCount":4321,"sleepDurationMinutes":340,
              "restingHeartRateBpm":58.5,"workoutCount":1,"workoutDurationMinutes":45,
              "heartRateAvgBpm":72,"heartRateMinBpm":50,"heartRateMaxBpm":130,
+             "workouts":[{"type":"RUNNING","title":"Morning run","startISO":"2026-10-10T00:00:00Z",
+                          "endISO":"2026-10-10T00:45:00Z","durationMinutes":45,"dataOrigin":"com.fitbit.FitbitMobile"}],
              "sleepSessions":[{"startISO":"2026-10-09T14:00:00Z","endISO":"2026-10-09T21:00:00Z","asleepMinutes":390}],
              "latestRecordISO":{"steps":null,"sleep":null,"heartRate":null,"restingHeartRate":null,"exercise":null},
              "backgroundAccess":true,"backgroundSupported":true,"historyAccess":false,
-             "dataOrigins":["com.fitbit.FitbitMobile"],"source":"healthConnect"}
+             "dataOrigins":["com.fitbit.FitbitMobile","com.google.android.apps.fitness"],"source":"healthConnect"}
             """,
           ),
           Json.parseToJsonElement(result.payloadJson ?: error("missing payload")),
@@ -105,6 +119,8 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
       assertEquals(10, payload["stepCount"]?.jsonPrimitive?.int)
       assertNull(payload["sleepDurationMinutes"])
       assertNull(payload["sleepSessions"])
+      // No exercise permission: absent, not an empty list.
+      assertNull(payload["workouts"])
       assertEquals(
         listOf("sleep", "heartRate", "restingHeartRate", "exercise"),
         payload["missingPermissions"]?.jsonArray?.map { it.jsonPrimitive.content },
@@ -140,6 +156,19 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
       assertEquals(listOf(24, 24, 12), days.map { it["stepCount"]?.jsonPrimitive?.int })
       assertEquals(listOf(null, 50, 340), days.map { it["sleepDurationMinutes"]?.jsonPrimitive?.int })
       assertEquals(listOf(null, 1, 1), days.map { it["workoutCount"]?.jsonPrimitive?.int })
+      // Same window rule as workoutCount; oldest first.
+      assertEquals(
+        listOf("WALKING", "RUNNING"),
+        payload["workouts"]?.jsonArray?.map { it.jsonObject["type"]?.jsonPrimitive?.content },
+      )
+      assertEquals(
+        listOf(emptyList(), listOf("WALKING"), listOf("RUNNING")),
+        days.map { day -> day["workouts"]?.jsonArray?.map { it.jsonObject["type"]?.jsonPrimitive?.content } },
+      )
+      val walk = days[1]["workouts"]!!.jsonArray.single().jsonObject
+      assertEquals(60, walk["durationMinutes"]?.jsonPrimitive?.int)
+      assertEquals("com.google.android.apps.fitness", walk["dataOrigin"]?.jsonPrimitive?.content)
+      assertFalse("title" in walk)
     }
 
   @Test
@@ -246,6 +275,27 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
       assertTrue(payload["historyAccess"]!!.jsonPrimitive.boolean)
       assertTrue(payload["backgroundSupported"]!!.jsonPrimitive.boolean)
     }
+
+  @Test
+  fun readableExerciseWithoutWorkoutsReportsAnEmptyList() =
+    runTest {
+      val payload = payload(HealthHandler(appContext(), FakeHealthDataSource(), clock).handleHealthSummary(null))
+      assertEquals(0, payload["workouts"]?.jsonArray?.size)
+      assertNull(payload["workoutCount"])
+    }
+
+  @Test
+  fun exerciseTypesUseHealthConnectConstantNames() {
+    assertEquals("WALKING", healthExerciseTypeName(ExerciseSessionRecord.EXERCISE_TYPE_WALKING))
+    assertEquals("RUNNING", healthExerciseTypeName(ExerciseSessionRecord.EXERCISE_TYPE_RUNNING))
+    assertEquals("BIKING", healthExerciseTypeName(ExerciseSessionRecord.EXERCISE_TYPE_BIKING))
+    assertEquals(
+      "HIGH_INTENSITY_INTERVAL_TRAINING",
+      healthExerciseTypeName(ExerciseSessionRecord.EXERCISE_TYPE_HIGH_INTENSITY_INTERVAL_TRAINING),
+    )
+    assertEquals("OTHER_WORKOUT", healthExerciseTypeName(ExerciseSessionRecord.EXERCISE_TYPE_OTHER_WORKOUT))
+    assertEquals("OTHER_999", healthExerciseTypeName(999))
+  }
 
   @Test
   fun mergedDurationClipsAndMergesOverlaps() {

@@ -125,6 +125,9 @@ internal data class HealthExerciseSession(
   val start: Instant,
   val end: Instant,
   val dataOrigin: String?,
+  /** Readable exercise type from [healthExerciseTypeName]. */
+  val type: String = healthExerciseTypeName(ExerciseSessionRecord.EXERCISE_TYPE_OTHER_WORKOUT),
+  val title: String? = null,
 )
 
 /** Health Connect seam for the provider and tests. */
@@ -279,6 +282,8 @@ internal object HealthConnectDataSource : HealthDataSource {
         start = record.startTime,
         end = record.endTime,
         dataOrigin = record.metadata.dataOrigin.packageName,
+        type = healthExerciseTypeName(record.exerciseType),
+        title = record.title?.trim()?.ifEmpty { null },
       )
     }
 
@@ -498,16 +503,39 @@ class HealthHandler internal constructor(
       ?.let { put("sleepDurationMinutes", roundedMinutes(it)) }
     aggregate.restingHeartRateBpm?.let { put("restingHeartRateBpm", (it * 10).roundToLong() / 10.0) }
     // Like HealthKit's strict start date: a workout belongs to the window it started in.
-    exerciseSessions
-      ?.filter { it.start >= window.start && it.start < window.end }
+    val workouts =
+      exerciseSessions
+        ?.filter { it.start >= window.start && it.start < window.end }
+        ?.sortedBy { it.start }
+    workouts
       ?.takeIf { it.isNotEmpty() }
-      ?.let { workouts ->
-        put("workoutCount", workouts.size)
-        put("workoutDurationMinutes", roundedMinutes(workouts.fold(Duration.ZERO) { sum, workout -> sum + Duration.between(workout.start, workout.end) }))
+      ?.let {
+        put("workoutCount", it.size)
+        put("workoutDurationMinutes", roundedMinutes(it.fold(Duration.ZERO) { sum, workout -> sum + Duration.between(workout.start, workout.end) }))
       }
     aggregate.heartRateAvgBpm?.let { put("heartRateAvgBpm", it) }
     aggregate.heartRateMinBpm?.let { put("heartRateMinBpm", it) }
     aggregate.heartRateMaxBpm?.let { put("heartRateMaxBpm", it) }
+    // Present whenever exercise is readable, so an empty list means "no workouts" rather than "no access".
+    if (workouts != null) {
+      put(
+        "workouts",
+        buildJsonArray {
+          for (workout in workouts) {
+            add(
+              buildJsonObject {
+                put("type", workout.type)
+                workout.title?.let { put("title", it) }
+                put("startISO", workout.start.toString())
+                put("endISO", workout.end.toString())
+                put("durationMinutes", roundedMinutes(Duration.between(workout.start, workout.end)))
+                workout.dataOrigin?.let { put("dataOrigin", it) }
+              },
+            )
+          }
+        },
+      )
+    }
   }
 
   /** Returns true while the Health Connect provider can be queried on this phone. */
@@ -626,5 +654,74 @@ internal fun mergedDuration(
   }
   return total + Duration.between(current.start, current.end)
 }
+
+/** Health Connect exercise types by constant name, so callers read "RUNNING" instead of 56. */
+private val HEALTH_EXERCISE_TYPE_NAMES: Map<Int, String> =
+  mapOf(
+    ExerciseSessionRecord.EXERCISE_TYPE_OTHER_WORKOUT to "OTHER_WORKOUT",
+    ExerciseSessionRecord.EXERCISE_TYPE_BADMINTON to "BADMINTON",
+    ExerciseSessionRecord.EXERCISE_TYPE_BASEBALL to "BASEBALL",
+    ExerciseSessionRecord.EXERCISE_TYPE_BASKETBALL to "BASKETBALL",
+    ExerciseSessionRecord.EXERCISE_TYPE_BIKING to "BIKING",
+    ExerciseSessionRecord.EXERCISE_TYPE_BIKING_STATIONARY to "BIKING_STATIONARY",
+    ExerciseSessionRecord.EXERCISE_TYPE_BOOT_CAMP to "BOOT_CAMP",
+    ExerciseSessionRecord.EXERCISE_TYPE_BOXING to "BOXING",
+    ExerciseSessionRecord.EXERCISE_TYPE_CALISTHENICS to "CALISTHENICS",
+    ExerciseSessionRecord.EXERCISE_TYPE_CRICKET to "CRICKET",
+    ExerciseSessionRecord.EXERCISE_TYPE_DANCING to "DANCING",
+    ExerciseSessionRecord.EXERCISE_TYPE_ELLIPTICAL to "ELLIPTICAL",
+    ExerciseSessionRecord.EXERCISE_TYPE_EXERCISE_CLASS to "EXERCISE_CLASS",
+    ExerciseSessionRecord.EXERCISE_TYPE_FENCING to "FENCING",
+    ExerciseSessionRecord.EXERCISE_TYPE_FOOTBALL_AMERICAN to "FOOTBALL_AMERICAN",
+    ExerciseSessionRecord.EXERCISE_TYPE_FOOTBALL_AUSTRALIAN to "FOOTBALL_AUSTRALIAN",
+    ExerciseSessionRecord.EXERCISE_TYPE_FRISBEE_DISC to "FRISBEE_DISC",
+    ExerciseSessionRecord.EXERCISE_TYPE_GOLF to "GOLF",
+    ExerciseSessionRecord.EXERCISE_TYPE_GUIDED_BREATHING to "GUIDED_BREATHING",
+    ExerciseSessionRecord.EXERCISE_TYPE_GYMNASTICS to "GYMNASTICS",
+    ExerciseSessionRecord.EXERCISE_TYPE_HANDBALL to "HANDBALL",
+    ExerciseSessionRecord.EXERCISE_TYPE_HIGH_INTENSITY_INTERVAL_TRAINING to "HIGH_INTENSITY_INTERVAL_TRAINING",
+    ExerciseSessionRecord.EXERCISE_TYPE_HIKING to "HIKING",
+    ExerciseSessionRecord.EXERCISE_TYPE_ICE_HOCKEY to "ICE_HOCKEY",
+    ExerciseSessionRecord.EXERCISE_TYPE_ICE_SKATING to "ICE_SKATING",
+    ExerciseSessionRecord.EXERCISE_TYPE_MARTIAL_ARTS to "MARTIAL_ARTS",
+    ExerciseSessionRecord.EXERCISE_TYPE_PADDLING to "PADDLING",
+    ExerciseSessionRecord.EXERCISE_TYPE_PARAGLIDING to "PARAGLIDING",
+    ExerciseSessionRecord.EXERCISE_TYPE_PILATES to "PILATES",
+    ExerciseSessionRecord.EXERCISE_TYPE_RACQUETBALL to "RACQUETBALL",
+    ExerciseSessionRecord.EXERCISE_TYPE_ROCK_CLIMBING to "ROCK_CLIMBING",
+    ExerciseSessionRecord.EXERCISE_TYPE_ROLLER_HOCKEY to "ROLLER_HOCKEY",
+    ExerciseSessionRecord.EXERCISE_TYPE_ROWING to "ROWING",
+    ExerciseSessionRecord.EXERCISE_TYPE_ROWING_MACHINE to "ROWING_MACHINE",
+    ExerciseSessionRecord.EXERCISE_TYPE_RUGBY to "RUGBY",
+    ExerciseSessionRecord.EXERCISE_TYPE_RUNNING to "RUNNING",
+    ExerciseSessionRecord.EXERCISE_TYPE_RUNNING_TREADMILL to "RUNNING_TREADMILL",
+    ExerciseSessionRecord.EXERCISE_TYPE_SAILING to "SAILING",
+    ExerciseSessionRecord.EXERCISE_TYPE_SCUBA_DIVING to "SCUBA_DIVING",
+    ExerciseSessionRecord.EXERCISE_TYPE_SKATING to "SKATING",
+    ExerciseSessionRecord.EXERCISE_TYPE_SKIING to "SKIING",
+    ExerciseSessionRecord.EXERCISE_TYPE_SNOWBOARDING to "SNOWBOARDING",
+    ExerciseSessionRecord.EXERCISE_TYPE_SNOWSHOEING to "SNOWSHOEING",
+    ExerciseSessionRecord.EXERCISE_TYPE_SOCCER to "SOCCER",
+    ExerciseSessionRecord.EXERCISE_TYPE_SOFTBALL to "SOFTBALL",
+    ExerciseSessionRecord.EXERCISE_TYPE_SQUASH to "SQUASH",
+    ExerciseSessionRecord.EXERCISE_TYPE_STAIR_CLIMBING to "STAIR_CLIMBING",
+    ExerciseSessionRecord.EXERCISE_TYPE_STAIR_CLIMBING_MACHINE to "STAIR_CLIMBING_MACHINE",
+    ExerciseSessionRecord.EXERCISE_TYPE_STRENGTH_TRAINING to "STRENGTH_TRAINING",
+    ExerciseSessionRecord.EXERCISE_TYPE_STRETCHING to "STRETCHING",
+    ExerciseSessionRecord.EXERCISE_TYPE_SURFING to "SURFING",
+    ExerciseSessionRecord.EXERCISE_TYPE_SWIMMING_OPEN_WATER to "SWIMMING_OPEN_WATER",
+    ExerciseSessionRecord.EXERCISE_TYPE_SWIMMING_POOL to "SWIMMING_POOL",
+    ExerciseSessionRecord.EXERCISE_TYPE_TABLE_TENNIS to "TABLE_TENNIS",
+    ExerciseSessionRecord.EXERCISE_TYPE_TENNIS to "TENNIS",
+    ExerciseSessionRecord.EXERCISE_TYPE_VOLLEYBALL to "VOLLEYBALL",
+    ExerciseSessionRecord.EXERCISE_TYPE_WALKING to "WALKING",
+    ExerciseSessionRecord.EXERCISE_TYPE_WATER_POLO to "WATER_POLO",
+    ExerciseSessionRecord.EXERCISE_TYPE_WEIGHTLIFTING to "WEIGHTLIFTING",
+    ExerciseSessionRecord.EXERCISE_TYPE_WHEELCHAIR to "WHEELCHAIR",
+    ExerciseSessionRecord.EXERCISE_TYPE_YOGA to "YOGA",
+  )
+
+/** Readable name for an ExerciseSessionRecord exercise type; types newer than this table become `OTHER_<n>`. */
+internal fun healthExerciseTypeName(type: Int): String = HEALTH_EXERCISE_TYPE_NAMES[type] ?: "OTHER_$type"
 
 private fun roundedMinutes(duration: Duration): Int = (duration.toMillis() / 60_000.0).roundToInt()
