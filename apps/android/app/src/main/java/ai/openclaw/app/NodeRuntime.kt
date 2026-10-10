@@ -1109,6 +1109,8 @@ class NodeRuntime private constructor(
     val connectAuth: ((nonce: String, signedAt: Long) -> JsonObject)? = null,
     val browserFocusAvailable: Boolean = false,
     val legacyAuth: (() -> JsonObject)? = null,
+    /** Operator edge-proxy headers, read at load time; the WebView sends them only to [baseUrl]'s HTTPS origin. */
+    val edgeHeaders: (() -> Map<String, String>)? = null,
   )
 
   private val appContext = context.applicationContext
@@ -5264,6 +5266,8 @@ class NodeRuntime private constructor(
             }
           }
         },
+        // Same store the WebSocket upgrade reads, so an edge proxy (Cloudflare Access) admits the page too.
+        edgeHeaders = { prefs.loadGatewayCustomHeaders(endpoint.stableId) },
       )
     _gatewayControlPage.value = page
   }

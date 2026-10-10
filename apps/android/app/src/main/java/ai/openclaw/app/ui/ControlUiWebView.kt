@@ -2,6 +2,7 @@ package ai.openclaw.app.ui
 
 import ai.openclaw.app.NodeRuntime
 import ai.openclaw.app.R
+import ai.openclaw.app.gateway.GatewayCustomHeaders
 import ai.openclaw.app.gateway.normalizeGatewayTlsFingerprintInput
 import ai.openclaw.app.i18n.nativeString
 import ai.openclaw.app.ui.design.ClawPlainIconButton
@@ -191,7 +192,9 @@ internal fun ControlUiWebView(
           )
         webView.webViewClient = client
         if (client.installAuth(webView) && client.isGatewayPage(currentUrl)) {
-          webView.loadUrl(client.authenticatedUrl(currentUrl))
+          // An edge proxy admits only the document request carrying its service token; it then sets
+          // its own session cookie, which covers the page's subresources and Control UI socket.
+          webView.loadUrl(client.authenticatedUrl(currentUrl), controlUiEdgeHeaders(page, currentUrl))
         } else {
           // Never silently create a separately paired browser identity for an invalid route.
           webView.loadData("Reconnect the app to reopen this gateway page.", "text/plain", "UTF-8")
@@ -265,6 +268,20 @@ private fun sameControlUiOrigin(
   val first = left.toHttpUrlOrNull() ?: return false
   val second = right.toHttpUrlOrNull() ?: return false
   return first.scheme == second.scheme && first.host == second.host && first.port == second.port
+}
+
+/**
+ * Operator edge headers for one Control UI load. Header values are credentials (Cloudflare Access
+ * service tokens), so like the WebSocket upgrade they travel only over HTTPS, and only to the
+ * gateway's own origin: never to cleartext routes or any other host a page could point at.
+ */
+internal fun controlUiEdgeHeaders(
+  page: NodeRuntime.GatewayControlPage,
+  url: String,
+): Map<String, String> {
+  if (!sameHttpsOrigin(page.baseUrl, url)) return emptyMap()
+  val stored = runCatching { page.edgeHeaders?.invoke() }.getOrNull() ?: return emptyMap()
+  return GatewayCustomHeaders.sanitized(stored)
 }
 
 /** Released UIs consume the accepted shared fields; current UI selects native signing. */
