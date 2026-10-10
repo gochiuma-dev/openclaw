@@ -27,6 +27,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import java.time.Instant
 
 @RunWith(RobolectricTestRunner::class)
 class InvokeDispatcherTest {
@@ -535,7 +536,15 @@ private class InvokeDispatcherFakeMotionDataSource : MotionDataSource {
 private class InvokeDispatcherFakeHealthDataSource : HealthDataSource {
   override fun availability(context: Context): HealthConnectAvailability = HealthConnectAvailability.Available
 
+  override fun extendedAccessSupport(context: Context): HealthExtendedAccess = HealthExtendedAccess(false, false)
+
   override suspend fun grantedPermissions(context: Context): Set<String> = emptySet()
+
+  override suspend fun latestRecordTimes(
+    context: Context,
+    metrics: Set<HealthMetric>,
+    before: Instant,
+  ): Map<HealthMetric, Instant?> = emptyMap()
 
   override suspend fun aggregate(
     context: Context,

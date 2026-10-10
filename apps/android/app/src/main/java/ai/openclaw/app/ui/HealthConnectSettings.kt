@@ -51,6 +51,7 @@ internal fun HealthConnectSettingsPanel(viewModel: MainViewModel) {
   var availability by remember { mutableStateOf(HealthConnectDataSource.availability(context)) }
   var grantedReads by remember { mutableIntStateOf(0) }
   var backgroundGranted by remember { mutableStateOf(false) }
+  var backgroundSupported by remember { mutableStateOf(true) }
   var lastRequestDenied by remember { mutableStateOf(false) }
 
   suspend fun refreshGrants() {
@@ -62,6 +63,7 @@ internal fun HealthConnectSettingsPanel(viewModel: MainViewModel) {
     }
     val granted = runCatching { HealthConnectDataSource.grantedPermissions(context) }.getOrDefault(emptySet())
     grantedReads = HealthConnectPermissions.metricReads.count { it in granted }
+    backgroundSupported = runCatching { HealthConnectDataSource.extendedAccessSupport(context).backgroundSupported }.getOrDefault(false)
     backgroundGranted = HealthConnectPermissions.READ_IN_BACKGROUND in granted
   }
 
@@ -84,8 +86,10 @@ internal fun HealthConnectSettingsPanel(viewModel: MainViewModel) {
   }
 
   fun requestAccess() {
-    val (background, history) = HealthConnectDataSource.extendedAccessSupport(context)
-    permissionLauncher.launch(HealthConnectPermissions.requestSet(backgroundSupported = background, historySupported = history))
+    val access = HealthConnectDataSource.extendedAccessSupport(context)
+    permissionLauncher.launch(
+      HealthConnectPermissions.requestSet(backgroundSupported = access.backgroundSupported, historySupported = access.historySupported),
+    )
   }
 
   fun setEnabled(checked: Boolean) {
@@ -149,6 +153,10 @@ internal fun HealthConnectSettingsPanel(viewModel: MainViewModel) {
           when {
             lastRequestDenied && !enabled -> {
               nativeString("No health data types were allowed. Choose at least one in Health Connect.")
+            }
+
+            !backgroundSupported -> {
+              nativeString("This phone's Health Connect cannot read in the background, so summaries only work while OpenClaw is on screen.")
             }
 
             !backgroundGranted -> {

@@ -3,7 +3,9 @@ package ai.openclaw.app.node
 import android.content.Context
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -74,7 +76,9 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
              "restingHeartRateBpm":58.5,"workoutCount":1,"workoutDurationMinutes":45,
              "heartRateAvgBpm":72,"heartRateMinBpm":50,"heartRateMaxBpm":130,
              "sleepSessions":[{"startISO":"2026-10-09T14:00:00Z","endISO":"2026-10-09T21:00:00Z","asleepMinutes":390}],
-             "backgroundAccess":true,"dataOrigins":["com.fitbit.FitbitMobile"],"source":"healthConnect"}
+             "latestRecordISO":{"steps":null,"sleep":null,"heartRate":null,"restingHeartRate":null,"exercise":null},
+             "backgroundAccess":true,"backgroundSupported":true,"historyAccess":false,
+             "dataOrigins":["com.fitbit.FitbitMobile"],"source":"healthConnect"}
             """,
           ),
           Json.parseToJsonElement(result.payloadJson ?: error("missing payload")),
@@ -192,6 +196,58 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
     }
 
   @Test
+  fun backgroundRefusalSaysWhetherBackgroundReadsCanEverWork() =
+    runTest {
+      val foregroundOnly =
+        HealthHandler(
+          appContext(),
+          FakeHealthDataSource(
+            granted = HealthConnectPermissions.metricReads,
+            access = HealthExtendedAccess(backgroundSupported = false, historySupported = false),
+            aggregateFor = { throw SecurityException("background read") },
+          ),
+          clock,
+        ).handleHealthSummary(null)
+      assertEquals("HEALTH_FOREGROUND_ONLY", foregroundOnly.error?.code)
+
+      val notAllowed =
+        HealthHandler(
+          appContext(),
+          FakeHealthDataSource(
+            granted = HealthConnectPermissions.metricReads,
+            aggregateFor = { throw SecurityException("background read") },
+          ),
+          clock,
+        ).handleHealthSummary(null)
+      assertEquals("HEALTH_BACKGROUND_PERMISSION_REQUIRED", notAllowed.error?.code)
+    }
+
+  @Test
+  fun reportsNewestRecordPerAllowedMetric() =
+    runTest {
+      val source =
+        FakeHealthDataSource(
+          granted =
+            setOf(
+              HealthMetric.Steps.readPermission,
+              HealthMetric.Sleep.readPermission,
+              HealthConnectPermissions.READ_IN_BACKGROUND,
+              HealthConnectPermissions.READ_HISTORY,
+            ),
+          latest = mapOf(HealthMetric.Steps to Instant.parse("2026-10-10T02:45:00Z")),
+        )
+      val payload = payload(HealthHandler(appContext(), source, clock).handleHealthSummary(null))
+      val latest = payload["latestRecordISO"]!!.jsonObject
+      assertEquals("2026-10-10T02:45:00Z", latest["steps"]!!.jsonPrimitive.content)
+      // Allowed but nothing readable: explicit null, unlike unallowed metrics which are absent.
+      assertEquals(JsonNull, latest["sleep"])
+      assertFalse("heartRate" in latest)
+      assertEquals(listOf(Instant.parse("2026-10-10T03:00:00Z")), source.latestQueries)
+      assertTrue(payload["historyAccess"]!!.jsonPrimitive.boolean)
+      assertTrue(payload["backgroundSupported"]!!.jsonPrimitive.boolean)
+    }
+
+  @Test
   fun mergedDurationClipsAndMergesOverlaps() {
     val merged =
       mergedDuration(
@@ -223,14 +279,28 @@ private class FakeHealthDataSource(
   private val aggregateFor: (HealthWindow) -> HealthAggregate = { HealthAggregate() },
   private val sleep: List<HealthSleepSession> = emptyList(),
   private val exercise: List<HealthExerciseSession> = emptyList(),
+  private val access: HealthExtendedAccess = HealthExtendedAccess(backgroundSupported = true, historySupported = true),
+  private val latest: Map<HealthMetric, Instant> = emptyMap(),
 ) : HealthDataSource {
   val aggregateMetrics = mutableListOf<Set<HealthMetric>>()
   val sleepQueries = mutableListOf<HealthWindow>()
   val exerciseQueries = mutableListOf<HealthWindow>()
+  val latestQueries = mutableListOf<Instant>()
 
   override fun availability(context: Context): HealthConnectAvailability = availability
 
+  override fun extendedAccessSupport(context: Context): HealthExtendedAccess = access
+
   override suspend fun grantedPermissions(context: Context): Set<String> = granted
+
+  override suspend fun latestRecordTimes(
+    context: Context,
+    metrics: Set<HealthMetric>,
+    before: Instant,
+  ): Map<HealthMetric, Instant?> {
+    latestQueries += before
+    return metrics.associateWith { latest[it] }
+  }
 
   override suspend fun aggregate(
     context: Context,

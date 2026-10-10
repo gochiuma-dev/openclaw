@@ -74,6 +74,12 @@ internal object HealthConnectPermissions {
     }
 }
 
+/** Whether this phone's Health Connect can grant reads outside the foreground and before the first grant. */
+internal data class HealthExtendedAccess(
+  val backgroundSupported: Boolean,
+  val historySupported: Boolean,
+)
+
 internal enum class HealthConnectAvailability {
   Available,
   UpdateRequired,
@@ -125,7 +131,16 @@ internal data class HealthExerciseSession(
 internal interface HealthDataSource {
   fun availability(context: Context): HealthConnectAvailability
 
+  fun extendedAccessSupport(context: Context): HealthExtendedAccess
+
   suspend fun grantedPermissions(context: Context): Set<String>
+
+  /** Time of the newest readable record per metric, or null when the readable range has none. */
+  suspend fun latestRecordTimes(
+    context: Context,
+    metrics: Set<HealthMetric>,
+    before: Instant,
+  ): Map<HealthMetric, Instant?>
 
   suspend fun aggregate(
     context: Context,
@@ -153,17 +168,17 @@ internal object HealthConnectDataSource : HealthDataSource {
     }
 
   /** Feature flags decide whether background and history reads can be requested at all. */
-  fun extendedAccessSupport(context: Context): Pair<Boolean, Boolean> {
-    if (availability(context) != HealthConnectAvailability.Available) return false to false
+  override fun extendedAccessSupport(context: Context): HealthExtendedAccess {
+    if (availability(context) != HealthConnectAvailability.Available) return HealthExtendedAccess(false, false)
     val features = HealthConnectClient.getOrCreate(context).features
-    return (
-      features.getFeatureStatus(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_IN_BACKGROUND) ==
-        HealthConnectFeatures.FEATURE_STATUS_AVAILABLE
-    ) to
-      (
+    return HealthExtendedAccess(
+      backgroundSupported =
+        features.getFeatureStatus(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_IN_BACKGROUND) ==
+          HealthConnectFeatures.FEATURE_STATUS_AVAILABLE,
+      historySupported =
         features.getFeatureStatus(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_HISTORY) ==
-          HealthConnectFeatures.FEATURE_STATUS_AVAILABLE
-      )
+          HealthConnectFeatures.FEATURE_STATUS_AVAILABLE,
+    )
   }
 
   override suspend fun grantedPermissions(context: Context): Set<String> =
@@ -171,6 +186,39 @@ internal object HealthConnectDataSource : HealthDataSource {
       .getOrCreate(context)
       .permissionController
       .getGrantedPermissions()
+
+  override suspend fun latestRecordTimes(
+    context: Context,
+    metrics: Set<HealthMetric>,
+    before: Instant,
+  ): Map<HealthMetric, Instant?> =
+    metrics.associateWith { metric ->
+      when (metric) {
+        HealthMetric.Steps -> newest(context, StepsRecord::class, before)?.endTime
+        HealthMetric.Sleep -> newest(context, SleepSessionRecord::class, before)?.endTime
+        HealthMetric.HeartRate -> newest(context, HeartRateRecord::class, before)?.endTime
+        HealthMetric.RestingHeartRate -> newest(context, RestingHeartRateRecord::class, before)?.time
+        HealthMetric.Exercise -> newest(context, ExerciseSessionRecord::class, before)?.endTime
+      }
+    }
+
+  // Newest by start time; without READ_HEALTH_DATA_HISTORY Health Connect only returns the last 30 days.
+  private suspend fun <T : Record> newest(
+    context: Context,
+    type: KClass<T>,
+    before: Instant,
+  ): T? =
+    HealthConnectClient
+      .getOrCreate(context)
+      .readRecords(
+        ReadRecordsRequest(
+          recordType = type,
+          timeRangeFilter = TimeRangeFilter.before(before),
+          ascendingOrder = false,
+          pageSize = 1,
+        ),
+      ).records
+      .firstOrNull()
 
   override suspend fun aggregate(
     context: Context,
@@ -312,12 +360,33 @@ class HealthHandler internal constructor(
     } catch (err: CancellationException) {
       throw err
     } catch (err: SecurityException) {
-      nodeInvokeError(
-        "HEALTH_PERMISSION_REQUIRED",
-        "Health Connect refused the read (${err.message ?: "permission denied"}); background reads need \"Access data in the background\" in Health Connect",
-      )
+      refusedReadError(err)
     } catch (err: Throwable) {
       nodeInvokeError("HEALTH_UNAVAILABLE", err.message ?: "Health Connect query failed")
+    }
+  }
+
+  /**
+   * Health Connect refuses reads from a backgrounded app unless READ_HEALTH_DATA_IN_BACKGROUND is
+   * granted. Name which case it is so a scheduled caller knows whether retrying can ever work.
+   */
+  private suspend fun refusedReadError(err: SecurityException): GatewaySession.InvokeResult {
+    val reason = err.message ?: "permission denied"
+    val granted = runCatching { dataSource.grantedPermissions(appContext) }.getOrDefault(emptySet())
+    if (HealthConnectPermissions.READ_IN_BACKGROUND in granted) {
+      return nodeInvokeError("HEALTH_PERMISSION_REQUIRED", "Health Connect refused the read ($reason)")
+    }
+    val access = runCatching { dataSource.extendedAccessSupport(appContext) }.getOrDefault(HealthExtendedAccess(false, false))
+    return if (access.backgroundSupported) {
+      nodeInvokeError(
+        "HEALTH_BACKGROUND_PERMISSION_REQUIRED",
+        "Health Connect refused the read ($reason); allow \"Access data in the background\" for OpenClaw in Health Connect so summaries work while OpenClaw is not on screen",
+      )
+    } else {
+      nodeInvokeError(
+        "HEALTH_FOREGROUND_ONLY",
+        "Health Connect refused the read ($reason); this phone's Health Connect does not support background reads, so health.summary only works while OpenClaw is on screen",
+      )
     }
   }
 
@@ -331,6 +400,8 @@ class HealthHandler internal constructor(
     val exerciseSessions =
       if (HealthMetric.Exercise in metrics) dataSource.exerciseSessions(appContext, request.window) else null
     val total = dataSource.aggregate(appContext, request.window, metrics)
+    val latest = dataSource.latestRecordTimes(appContext, metrics, clock.instant())
+    val access = dataSource.extendedAccessSupport(appContext)
     val perDay =
       if (request.days.size > 1) {
         request.days.map { day -> day to dataSource.aggregate(appContext, day.window, metrics) }
@@ -398,7 +469,18 @@ class HealthHandler internal constructor(
       }
       val missing = HealthMetric.entries.filter { it !in metrics }.map { it.key }
       if (missing.isNotEmpty()) put("missingPermissions", buildJsonArray { missing.forEach { add(JsonPrimitive(it)) } })
+      // Lets a daily collector tell "no new data synced yet" apart from "nothing happened".
+      put(
+        "latestRecordISO",
+        buildJsonObject {
+          for (metric in HealthMetric.entries.filter { it in metrics }) {
+            put(metric.key, latest[metric]?.toString())
+          }
+        },
+      )
       put("backgroundAccess", HealthConnectPermissions.READ_IN_BACKGROUND in granted)
+      put("backgroundSupported", access.backgroundSupported)
+      put("historyAccess", HealthConnectPermissions.READ_HISTORY in granted)
       put("dataOrigins", buildJsonArray { origins.sorted().forEach { add(JsonPrimitive(it)) } })
       put("source", "healthConnect")
     }
