@@ -12,6 +12,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -42,6 +44,7 @@ class NodeForegroundService : Service() {
         text = nativeString("Starting…"),
       )
     startForegroundWithTypes(notification = initial)
+    running = this
   }
 
   private fun observeRuntime(startId: Int) {
@@ -161,19 +164,7 @@ class NodeForegroundService : Service() {
       }
 
       ACTION_SET_VOICE_CAPTURE_MODE -> {
-        voiceCaptureMode = intent.getStringExtra(EXTRA_VOICE_CAPTURE_MODE).toVoiceCaptureMode()
-        startForegroundWithTypes(
-          notification =
-            buildNotification(
-              title = nativeString("OpenClaw Node"),
-              text =
-                if (voiceCaptureMode == VoiceCaptureMode.TalkMode) {
-                  nativeString("Talk mode active")
-                } else {
-                  nativeString("Connected")
-                },
-            ),
-        )
+        applyVoiceCaptureMode(intent.getStringExtra(EXTRA_VOICE_CAPTURE_MODE).toVoiceCaptureMode())
       }
     }
     if (!app.nodeServiceStartAllowed) {
@@ -188,7 +179,25 @@ class NodeForegroundService : Service() {
     return START_STICKY
   }
 
+  /** Re-declares the foreground service types for [mode]; must run on the main thread. */
+  private fun applyVoiceCaptureMode(mode: VoiceCaptureMode) {
+    voiceCaptureMode = mode
+    startForegroundWithTypes(
+      notification =
+        buildNotification(
+          title = nativeString("OpenClaw Node"),
+          text =
+            if (voiceCaptureMode == VoiceCaptureMode.TalkMode) {
+              nativeString("Talk mode active")
+            } else {
+              nativeString("Connected")
+            },
+        ),
+    )
+  }
+
   override fun onDestroy() {
+    if (running === this) running = null
     scope.cancel()
     super.onDestroy()
   }
@@ -271,10 +280,18 @@ class NodeForegroundService : Service() {
     private const val ACTION_SET_VOICE_CAPTURE_MODE = "ai.openclaw.app.action.SET_VOICE_CAPTURE_MODE"
     private const val EXTRA_VOICE_CAPTURE_MODE = "ai.openclaw.app.extra.VOICE_CAPTURE_MODE"
 
+    private const val TAG = "OpenClawNodeService"
+
+    /** The live instance in this process; lets callers update it without a background-restricted Intent. */
+    @Volatile
+    private var running: NodeForegroundService? = null
+
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+
     fun start(context: Context) {
       if (!(context.applicationContext as NodeApp).nodeServiceStartAllowed) return
       val intent = Intent(context, NodeForegroundService::class.java)
-      context.startForegroundService(intent)
+      startRefusingInBackground("start") { context.startForegroundService(intent) }
     }
 
     fun stop(context: Context) {
@@ -290,26 +307,58 @@ class NodeForegroundService : Service() {
       (context.applicationContext as NodeApp).updateNodeServiceIntent(allowStart = true) {
         if (startNow) {
           val intent = Intent(context, NodeForegroundService::class.java).setAction(ACTION_RESUME)
-          context.startForegroundService(intent)
+          startRefusingInBackground("resume") { context.startForegroundService(intent) }
         }
       }
 
+    /**
+     * Callers include background paths (Activity.onStop, relay close, PTT end), where Android refuses
+     * startService. A running service is updated in place; a stopped one is only started when the
+     * mode needs a microphone, and reads the runtime's mode once it observes it.
+     */
     fun setVoiceCaptureMode(
       context: Context,
       mode: VoiceCaptureMode,
     ) {
       if (!(context.applicationContext as NodeApp).nodeServiceStartAllowed) return
+      running?.let { service ->
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+          service.applyVoiceCaptureMode(mode)
+        } else {
+          mainHandler.post { if (running === service) service.applyVoiceCaptureMode(mode) }
+        }
+        return
+      }
+      // Nothing to downgrade, and waking the service just to say Off would fail in the background.
+      if (mode == VoiceCaptureMode.Off) return
       val intent =
         Intent(context, NodeForegroundService::class.java)
           .setAction(ACTION_SET_VOICE_CAPTURE_MODE)
           .putExtra(EXTRA_VOICE_CAPTURE_MODE, mode.name)
-      if (mode == VoiceCaptureMode.TalkMode) {
-        // Microphone foreground service type must be declared before Talk capture starts.
-        ContextCompat.startForegroundService(context, intent)
-      } else {
-        context.startService(intent)
+      startRefusingInBackground("set voice capture mode ${mode.name}") {
+        if (mode == VoiceCaptureMode.TalkMode) {
+          // Microphone foreground service type must be declared before Talk capture starts.
+          ContextCompat.startForegroundService(context, intent)
+        } else {
+          context.startService(intent)
+        }
       }
     }
+
+    // BackgroundServiceStartNotAllowedException and ForegroundServiceStartNotAllowedException are
+    // IllegalStateExceptions. The next foreground start (MainActivity) brings the service back and it
+    // re-reads runtime state, so a refused start only delays the notification.
+    private inline fun startRefusingInBackground(
+      what: String,
+      start: () -> Unit,
+    ): Boolean =
+      try {
+        start()
+        true
+      } catch (err: IllegalStateException) {
+        Log.w(TAG, "Android refused to $what NodeForegroundService from the background", err)
+        false
+      }
   }
 }
 
