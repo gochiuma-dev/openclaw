@@ -1,10 +1,22 @@
 package ai.openclaw.app.node
 
 import android.content.Context
+import androidx.health.connect.client.records.BasalMetabolicRateRecord
+import androidx.health.connect.client.records.BloodGlucoseRecord
+import androidx.health.connect.client.records.BodyFatRecord
 import androidx.health.connect.client.records.ExerciseRoute
 import androidx.health.connect.client.records.ExerciseRouteResult
 import androidx.health.connect.client.records.ExerciseSessionRecord
+import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
+import androidx.health.connect.client.records.OxygenSaturationRecord
+import androidx.health.connect.client.records.Vo2MaxRecord
+import androidx.health.connect.client.records.WeightRecord
+import androidx.health.connect.client.records.metadata.Metadata
+import androidx.health.connect.client.units.BloodGlucose
 import androidx.health.connect.client.units.Length
+import androidx.health.connect.client.units.Mass
+import androidx.health.connect.client.units.Percentage
+import androidx.health.connect.client.units.Power
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
@@ -61,6 +73,10 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
       ),
     )
 
+  // Every type the fake provider supports (feature-gated ones are unsupported by default).
+  private val allLatestNull =
+    HealthMetric.entries.filter { it.feature == null }.joinToString(",", "{", "}") { "\"${it.key}\":null" }
+
   @Test
   fun todaySummaryUsesTheIosPayloadShape() =
     runTest {
@@ -94,7 +110,7 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
              "workouts":[{"type":"RUNNING","title":"Morning run","startISO":"2026-10-10T00:00:00Z",
                           "endISO":"2026-10-10T00:45:00Z","durationMinutes":45,"dataOrigin":"com.fitbit.FitbitMobile"}],
              "sleepSessions":[{"startISO":"2026-10-09T14:00:00Z","endISO":"2026-10-09T21:00:00Z","asleepMinutes":390}],
-             "latestRecordISO":{"steps":null,"sleep":null,"heartRate":null,"restingHeartRate":null,"exercise":null},
+             "latestRecordISO":$allLatestNull,
              "backgroundAccess":true,"backgroundSupported":true,"historyAccess":false,
              "dataOrigins":["com.fitbit.FitbitMobile","com.google.android.apps.fitness"],"source":"healthConnect"}
             """,
@@ -117,7 +133,8 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
 
       val payload = payload(HealthHandler(appContext(), source, clock).handleHealthSummary("""{"period":"today"}"""))
 
-      assertEquals(listOf(setOf(HealthMetric.Steps)), source.aggregateMetrics)
+      // Steps cadence shares READ_STEPS.
+      assertEquals(listOf(setOf(HealthMetric.Steps, HealthMetric.StepsCadence)), source.aggregateMetrics)
       assertTrue(source.sleepQueries.isEmpty())
       assertTrue(source.exerciseQueries.isEmpty())
       assertEquals(10, payload["stepCount"]?.jsonPrimitive?.int)
@@ -126,7 +143,9 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
       // No exercise permission: absent, not an empty list.
       assertNull(payload["workouts"])
       assertEquals(
-        listOf("sleep", "heartRate", "restingHeartRate", "exercise"),
+        HealthMetric.entries
+          .filter { it.feature == null && it != HealthMetric.Steps && it != HealthMetric.StepsCadence }
+          .map { it.key },
         payload["missingPermissions"]?.jsonArray?.map { it.jsonPrimitive.content },
       )
       assertEquals("false", payload["backgroundAccess"]?.jsonPrimitive?.content)
@@ -275,7 +294,7 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
       // Allowed but nothing readable: explicit null, unlike unallowed metrics which are absent.
       assertEquals(JsonNull, latest["sleep"])
       assertFalse("heartRate" in latest)
-      assertEquals(listOf(Instant.parse("2026-10-10T03:00:00Z")), source.latestQueries)
+      assertEquals(setOf(Instant.parse("2026-10-10T03:00:00Z")), source.latestQueries.toSet())
       assertTrue(payload["historyAccess"]!!.jsonPrimitive.boolean)
       assertTrue(payload["backgroundSupported"]!!.jsonPrimitive.boolean)
     }
@@ -448,6 +467,269 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
   }
 
   @Test
+  fun newTypesAddUnitNamedFieldsPerWindowAndDay() =
+    runTest {
+      val yesterday = window("2026-10-08T15:00:00Z", "2026-10-09T15:00:00Z")
+      val source =
+        FakeHealthDataSource(
+          totalsFor = { w, _ ->
+            val dayOne = w == yesterday
+            HealthTotals(
+              values =
+                mapOf(
+                  "totalCaloriesKcal" to if (dayOne) 2100.4 else 900.6,
+                  "distanceMeters" to if (dayOne) 5012.7 else 1500.2,
+                  "floorsClimbed" to 3.04,
+                  "bloodPressureSystolicAvgMmHg" to 118.6,
+                  "nutritionProteinGrams" to 61.25,
+                  "hydrationMilliliters" to 1250.4,
+                ),
+              dataOrigins = setOf("com.google.android.apps.fitness"),
+            )
+          },
+          samplesFor = { metric ->
+            when (metric) {
+              HealthMetric.Weight -> {
+                listOf(
+                  HealthSample(Instant.parse("2026-10-09T00:00:00Z"), 70.456),
+                  HealthSample(Instant.parse("2026-10-09T12:00:00Z"), 70.123),
+                  HealthSample(Instant.parse("2026-10-09T23:00:00Z"), 69.9),
+                )
+              }
+
+              HealthMetric.OxygenSaturation -> {
+                listOf(
+                  HealthSample(Instant.parse("2026-10-09T01:00:00Z"), 95.0),
+                  HealthSample(Instant.parse("2026-10-09T02:00:00Z"), 98.0),
+                  HealthSample(Instant.parse("2026-10-10T01:00:00Z"), 97.0),
+                )
+              }
+
+              else -> {
+                emptyList()
+              }
+            }
+          },
+        )
+
+      val payload =
+        payload(
+          HealthHandler(appContext(), source, clock)
+            .handleHealthSummary("""{"period":"range","startDate":"2026-10-09","endDate":"2026-10-10"}"""),
+        )
+      val days = payload["days"]!!.jsonArray.map { it.jsonObject }
+
+      // Health Connect's totals, rounded to each field's precision.
+      assertEquals(2100L, days[0]["totalCaloriesKcal"]?.jsonPrimitive?.long)
+      assertEquals(901L, days[1]["totalCaloriesKcal"]?.jsonPrimitive?.long)
+      assertEquals(5013L, days[0]["distanceMeters"]?.jsonPrimitive?.long)
+      assertEquals("3.0", days[0]["floorsClimbed"]?.jsonPrimitive?.content)
+      assertEquals(119L, days[0]["bloodPressureSystolicAvgMmHg"]?.jsonPrimitive?.long)
+      assertEquals("61.3", days[0]["nutritionProteinGrams"]?.jsonPrimitive?.content)
+      assertEquals(1250L, payload["hydrationMilliliters"]?.jsonPrimitive?.long)
+      // Latest value per window; a day without one leaves the field out.
+      assertEquals("70.12", days[0]["weightKg"]?.jsonPrimitive?.content)
+      assertEquals("69.9", days[1]["weightKg"]?.jsonPrimitive?.content)
+      assertEquals("69.9", payload["weightKg"]?.jsonPrimitive?.content)
+      // Avg / min / max over the window's samples.
+      assertEquals("96.5", days[0]["oxygenSaturationAvgPercent"]?.jsonPrimitive?.content)
+      assertEquals("95.0", days[0]["oxygenSaturationMinPercent"]?.jsonPrimitive?.content)
+      assertEquals("98.0", days[0]["oxygenSaturationMaxPercent"]?.jsonPrimitive?.content)
+      assertEquals("96.7", payload["oxygenSaturationAvgPercent"]?.jsonPrimitive?.content)
+      assertFalse("heightMeters" in payload)
+      assertTrue("com.google.android.apps.fitness" in payload["dataOrigins"]!!.jsonArray.map { it.jsonPrimitive.content })
+      assertNull(payload["readErrors"])
+      // Totals for every type travel in one aggregate call per window.
+      assertEquals(3, source.totalsQueries.size)
+    }
+
+  @Test
+  fun typesWithoutPermissionOrFeatureStayOut() =
+    runTest {
+      val source =
+        FakeHealthDataSource(
+          granted = setOf(HealthMetric.Weight.readPermission, HealthMetric.SkinTemperature.readPermission),
+          totalsFor = { _, _ -> HealthTotals(mapOf("skinTemperatureDeltaAvgCelsius" to -0.234, "distanceMeters" to 10.0)) },
+          samplesFor = { listOf(HealthSample(Instant.parse("2026-10-10T00:00:00Z"), 70.0)) },
+        )
+
+      val unsupported = payload(HealthHandler(appContext(), source, clock).handleHealthSummary(null))
+      assertEquals("70.0", unsupported["weightKg"]?.jsonPrimitive?.content)
+      assertFalse("distanceMeters" in unsupported)
+      assertFalse("skinTemperatureDeltaAvgCelsius" in unsupported)
+      val missing = unsupported["missingPermissions"]!!.jsonArray.map { it.jsonPrimitive.content }
+      assertTrue("distance" in missing)
+      // A feature this provider lacks is not a missing permission.
+      assertFalse("skinTemperature" in missing)
+      assertFalse("plannedExercise" in missing)
+      assertEquals(listOf(HealthMetric.Weight), source.sampleQueries)
+
+      val supportedSource =
+        FakeHealthDataSource(
+          granted = setOf(HealthMetric.SkinTemperature.readPermission),
+          access = HealthExtendedAccess(true, true, supportedFeatures = setOf(HealthMetric.SkinTemperature.feature!!)),
+          totalsFor = { _, _ -> HealthTotals(mapOf("skinTemperatureDeltaAvgCelsius" to -0.234)) },
+        )
+      val supported = payload(HealthHandler(appContext(), supportedSource, clock).handleHealthSummary(null))
+      assertEquals("-0.23", supported["skinTemperatureDeltaAvgCelsius"]?.jsonPrimitive?.content)
+    }
+
+  @Test
+  fun oneFailingTypeIsNamedWithoutFailingTheSummary() =
+    runTest {
+      val source =
+        FakeHealthDataSource(
+          aggregateFor = { HealthAggregate(stepCount = 10) },
+          failing = setOf(HealthMetric.Distance, HealthMetric.Weight),
+          totalsFor = { _, types ->
+            HealthTotals(
+              buildMap {
+                if (HealthMetric.TotalCalories in types) put("totalCaloriesKcal", 2000.0)
+                if (HealthMetric.Hydration in types) put("hydrationMilliliters", 800.0)
+              },
+            )
+          },
+          samplesFor = { listOf(HealthSample(Instant.parse("2026-10-10T00:00:00Z"), 1.72)) },
+        )
+
+      val payload = payload(HealthHandler(appContext(), source, clock).handleHealthSummary(null))
+
+      assertEquals(10, payload["stepCount"]?.jsonPrimitive?.int)
+      // The combined call failed on distance; the per-type retry keeps the rest.
+      assertEquals(2000L, payload["totalCaloriesKcal"]?.jsonPrimitive?.long)
+      assertEquals(800L, payload["hydrationMilliliters"]?.jsonPrimitive?.long)
+      assertFalse("distanceMeters" in payload)
+      assertFalse("weightKg" in payload)
+      assertEquals("1.72", payload["heightMeters"]?.jsonPrimitive?.content)
+      assertEquals(
+        mapOf("distance" to "distance unavailable", "weight" to "weight unavailable"),
+        payload["readErrors"]!!.jsonObject.mapValues { it.value.jsonPrimitive.content },
+      )
+    }
+
+  @Test
+  fun workoutsCarryTheirOwnTotals() =
+    runTest {
+      val run = workouts.first()
+      val source =
+        FakeHealthDataSource(
+          exercise = workouts,
+          totalsFor = { w, _ ->
+            if (w == HealthWindow(run.start, run.end)) {
+              HealthTotals(
+                mapOf("totalCaloriesKcal" to 420.4, "activeCaloriesKcal" to 350.6, "distanceMeters" to 7020.2, "elevationGainedMeters" to 35.25),
+              )
+            } else {
+              HealthTotals()
+            }
+          },
+        )
+
+      val workout = workouts(HealthHandler(appContext(), source, clock).handleHealthSummary(null)).single()
+
+      assertEquals(420L, workout["totalCaloriesKcal"]?.jsonPrimitive?.long)
+      assertEquals(351L, workout["activeCaloriesKcal"]?.jsonPrimitive?.long)
+      assertEquals(7020L, workout["distanceMeters"]?.jsonPrimitive?.long)
+      assertEquals("35.3", workout["elevationGainedMeters"]?.jsonPrimitive?.content)
+      val workoutQuery = source.totalsQueries.single { it.first == HealthWindow(run.start, run.end) }
+      assertEquals(HEALTH_WORKOUT_TOTAL_METRICS.toSet(), workoutQuery.second)
+    }
+
+  @Test
+  fun plannedWorkoutsNeedTheFeatureAndPermission() =
+    runTest {
+      val plan =
+        HealthPlannedExercise(Instant.parse("2026-10-10T09:00:00Z"), Instant.parse("2026-10-10T10:00:00Z"), "RUNNING", "Tempo", completed = false)
+      val withFeature =
+        FakeHealthDataSource(
+          granted = setOf(HealthMetric.PlannedExercise.readPermission),
+          access = HealthExtendedAccess(true, true, supportedFeatures = setOf(HealthMetric.PlannedExercise.feature!!)),
+          planned = listOf(plan),
+        )
+      // Planned workouts later today still belong to today.
+      val laterClock = Clock.fixed(Instant.parse("2026-10-10T12:00:00Z"), ZoneId.of("Asia/Tokyo"))
+      val payload = payload(HealthHandler(appContext(), withFeature, laterClock).handleHealthSummary(null))
+      assertEquals(
+        Json.parseToJsonElement(
+          """[{"type":"RUNNING","title":"Tempo","startISO":"2026-10-10T09:00:00Z","endISO":"2026-10-10T10:00:00Z","completed":false}]""",
+        ),
+        payload["plannedWorkouts"],
+      )
+
+      val withoutFeature = FakeHealthDataSource(granted = setOf(HealthMetric.PlannedExercise.readPermission, HealthMetric.Steps.readPermission), planned = listOf(plan))
+      assertNull(payload(HealthHandler(appContext(), withoutFeature, laterClock).handleHealthSummary(null))["plannedWorkouts"])
+    }
+
+  @Test
+  fun readingRulesConvertHealthConnectRecords() {
+    val at = Instant.parse("2026-10-10T00:00:00Z")
+
+    fun sample(
+      metric: HealthMetric,
+      record: androidx.health.connect.client.records.Record,
+    ): HealthSample =
+      when (val reading = HEALTH_READINGS.getValue(metric)) {
+        is HealthReading.Latest -> reading.sample(record)
+        is HealthReading.Stats -> reading.sample(record)
+        is HealthReading.Totals -> error("aggregated by Health Connect")
+      }
+    val meta = Metadata.manualEntry()
+
+    assertEquals(70.25, sample(HealthMetric.Weight, WeightRecord(at, null, Mass.kilograms(70.25), meta)).value, 1e-9)
+    assertEquals(at, sample(HealthMetric.Weight, WeightRecord(at, null, Mass.kilograms(70.25), meta)).time)
+    assertEquals(21.5, sample(HealthMetric.BodyFat, BodyFatRecord(at, null, Percentage(21.5), meta)).value, 1e-9)
+    assertEquals(1520.0, sample(HealthMetric.BasalMetabolicRate, BasalMetabolicRateRecord(at, null, Power.kilocaloriesPerDay(1520.0), meta)).value, 1e-6)
+    assertEquals(97.0, sample(HealthMetric.OxygenSaturation, OxygenSaturationRecord(at, null, Percentage(97.0), meta)).value, 1e-9)
+    assertEquals(
+      100.0,
+      sample(HealthMetric.BloodGlucose, BloodGlucoseRecord(at, null, meta, BloodGlucose.milligramsPerDeciliter(100.0))).value,
+      1e-6,
+    )
+    assertEquals(42.0, sample(HealthMetric.HeartRateVariability, HeartRateVariabilityRmssdRecord(at, null, 42.0, meta)).value, 1e-9)
+    assertEquals(45.5, sample(HealthMetric.Vo2Max, Vo2MaxRecord(at, null, meta, 45.5)).value, 1e-9)
+    // Every new type has exactly one reading rule; the original five and planned workouts have their own code.
+    val bespoke = setOf(HealthMetric.Steps, HealthMetric.Sleep, HealthMetric.HeartRate, HealthMetric.RestingHeartRate, HealthMetric.Exercise, HealthMetric.PlannedExercise)
+    assertEquals(HealthMetric.entries.toSet() - bespoke, HEALTH_READINGS.keys)
+  }
+
+  @Test
+  fun sampleStatsAndLatestStayInsideTheWindow() {
+    val day = window("2026-10-09T15:00:00Z", "2026-10-10T15:00:00Z")
+    val samples =
+      listOf(
+        HealthSample(Instant.parse("2026-10-09T14:59:59Z"), 1.0),
+        HealthSample(Instant.parse("2026-10-09T15:00:00Z"), 4.0),
+        HealthSample(Instant.parse("2026-10-10T03:00:00Z"), 2.0),
+        HealthSample(Instant.parse("2026-10-10T15:00:00Z"), 9.0),
+      )
+    assertEquals(HealthSampleStats(avg = 3.0, min = 2.0, max = 4.0), sampleStats(samples, day))
+    assertEquals(2.0, latestSample(samples, day)?.value)
+    assertNull(sampleStats(emptyList(), day))
+    assertNull(latestSample(samples.take(1), day))
+  }
+
+  @Test
+  fun permissionsAreDeclaredAndLeaveReproductiveDataOut() {
+    @Suppress("DEPRECATION")
+    val declared =
+      appContext()
+        .packageManager
+        .getPackageInfo(appContext().packageName, android.content.pm.PackageManager.GET_PERMISSIONS)
+        .requestedPermissions
+        .orEmpty()
+        .toSet()
+    assertEquals(emptySet<String>(), HealthConnectPermissions.metricReads - declared)
+    val reproductive = listOf("MENSTRUATION", "OVULATION", "CERVICAL_MUCUS", "INTERMENSTRUAL", "SEXUAL_ACTIVITY")
+    assertTrue((HealthConnectPermissions.metricReads + declared).none { permission -> reproductive.any { it in permission } })
+    // Feature-gated reads are requested only where the provider has the feature.
+    val skin = HealthMetric.SkinTemperature.readPermission
+    assertFalse(skin in HealthConnectPermissions.requestSet(backgroundSupported = true, historySupported = true))
+    assertTrue(
+      skin in HealthConnectPermissions.requestSet(true, true, supportedFeatures = setOf(HealthMetric.SkinTemperature.feature!!)),
+    )
+  }
+
+  @Test
   fun mergedDurationClipsAndMergesOverlaps() {
     val merged =
       mergedDuration(
@@ -486,7 +768,14 @@ private class FakeHealthDataSource(
   private val exercise: List<HealthExerciseSession> = emptyList(),
   private val access: HealthExtendedAccess = HealthExtendedAccess(backgroundSupported = true, historySupported = true),
   private val latest: Map<HealthMetric, Instant> = emptyMap(),
+  private val totalsFor: (HealthWindow, Set<HealthMetric>) -> HealthTotals = { _, _ -> HealthTotals() },
+  private val samplesFor: (HealthMetric) -> List<HealthSample> = { emptyList() },
+  private val planned: List<HealthPlannedExercise> = emptyList(),
+  private val failing: Set<HealthMetric> = emptySet(),
 ) : HealthDataSource {
+  val totalsQueries = mutableListOf<Pair<HealthWindow, Set<HealthMetric>>>()
+  val sampleQueries = mutableListOf<HealthMetric>()
+
   val aggregateMetrics = mutableListOf<Set<HealthMetric>>()
   val sleepQueries = mutableListOf<HealthWindow>()
   val exerciseQueries = mutableListOf<HealthWindow>()
@@ -503,7 +792,7 @@ private class FakeHealthDataSource(
     metrics: Set<HealthMetric>,
     before: Instant,
   ): Map<HealthMetric, Instant?> {
-    latestQueries += before
+    synchronized(latestQueries) { latestQueries += before }
     return metrics.associateWith { latest[it] }
   }
 
@@ -512,7 +801,7 @@ private class FakeHealthDataSource(
     window: HealthWindow,
     metrics: Set<HealthMetric>,
   ): HealthAggregate {
-    aggregateMetrics += metrics
+    synchronized(aggregateMetrics) { aggregateMetrics += metrics }
     return aggregateFor(window)
   }
 
@@ -520,7 +809,7 @@ private class FakeHealthDataSource(
     context: Context,
     window: HealthWindow,
   ): List<HealthSleepSession> {
-    sleepQueries += window
+    synchronized(sleepQueries) { sleepQueries += window }
     return sleep
   }
 
@@ -528,7 +817,35 @@ private class FakeHealthDataSource(
     context: Context,
     window: HealthWindow,
   ): List<HealthExerciseSession> {
-    exerciseQueries += window
+    synchronized(exerciseQueries) { exerciseQueries += window }
     return exercise
+  }
+
+  override suspend fun totals(
+    context: Context,
+    window: HealthWindow,
+    metrics: Set<HealthMetric>,
+  ): HealthTotals {
+    synchronized(totalsQueries) { totalsQueries += window to metrics }
+    metrics.firstOrNull { it in failing }?.let { throw IllegalStateException("${it.key} unavailable") }
+    return totalsFor(window, metrics)
+  }
+
+  override suspend fun samples(
+    context: Context,
+    window: HealthWindow,
+    metric: HealthMetric,
+  ): List<HealthSample> {
+    synchronized(sampleQueries) { sampleQueries += metric }
+    if (metric in failing) throw IllegalStateException("${metric.key} unavailable")
+    return samplesFor(metric)
+  }
+
+  override suspend fun plannedExercises(
+    context: Context,
+    window: HealthWindow,
+  ): List<HealthPlannedExercise> {
+    if (HealthMetric.PlannedExercise in failing) throw IllegalStateException("plannedExercise unavailable")
+    return planned
   }
 }

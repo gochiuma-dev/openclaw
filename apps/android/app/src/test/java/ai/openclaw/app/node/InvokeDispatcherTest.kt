@@ -561,4 +561,21 @@ private class InvokeDispatcherFakeHealthDataSource : HealthDataSource {
     context: Context,
     window: HealthWindow,
   ): List<HealthExerciseSession> = emptyList()
+
+  override suspend fun totals(
+    context: Context,
+    window: HealthWindow,
+    metrics: Set<HealthMetric>,
+  ): HealthTotals = HealthTotals()
+
+  override suspend fun samples(
+    context: Context,
+    window: HealthWindow,
+    metric: HealthMetric,
+  ): List<HealthSample> = emptyList()
+
+  override suspend fun plannedExercises(
+    context: Context,
+    window: HealthWindow,
+  ): List<HealthPlannedExercise> = emptyList()
 }

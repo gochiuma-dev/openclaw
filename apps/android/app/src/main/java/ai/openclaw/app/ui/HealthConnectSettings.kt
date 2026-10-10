@@ -52,6 +52,7 @@ internal fun HealthConnectSettingsPanel(viewModel: MainViewModel) {
   var grantedReads by remember { mutableIntStateOf(0) }
   var backgroundGranted by remember { mutableStateOf(false) }
   var backgroundSupported by remember { mutableStateOf(true) }
+  var requestableReads by remember { mutableStateOf(HealthConnectPermissions.metricReads(emptySet())) }
   var lastRequestDenied by remember { mutableStateOf(false) }
 
   suspend fun refreshGrants() {
@@ -62,8 +63,10 @@ internal fun HealthConnectSettingsPanel(viewModel: MainViewModel) {
       return
     }
     val granted = runCatching { HealthConnectDataSource.grantedPermissions(context) }.getOrDefault(emptySet())
-    grantedReads = HealthConnectPermissions.metricReads.count { it in granted }
-    backgroundSupported = runCatching { HealthConnectDataSource.extendedAccessSupport(context).backgroundSupported }.getOrDefault(false)
+    val access = runCatching { HealthConnectDataSource.extendedAccessSupport(context) }.getOrNull()
+    requestableReads = HealthConnectPermissions.metricReads(access?.supportedFeatures.orEmpty())
+    grantedReads = requestableReads.count { it in granted }
+    backgroundSupported = access?.backgroundSupported ?: false
     backgroundGranted = HealthConnectPermissions.READ_IN_BACKGROUND in granted
   }
 
@@ -92,6 +95,7 @@ internal fun HealthConnectSettingsPanel(viewModel: MainViewModel) {
         backgroundSupported = access.backgroundSupported,
         historySupported = access.historySupported,
         routesSupported = access.routesSupported,
+        supportedFeatures = access.supportedFeatures,
       ),
     )
   }
@@ -128,7 +132,7 @@ internal fun HealthConnectSettingsPanel(viewModel: MainViewModel) {
         nativeString(
           "\$grantedReads of \$total data types allowed.",
           grantedReads,
-          HealthConnectPermissions.metricReads.size,
+          requestableReads.size,
         )
       }
 

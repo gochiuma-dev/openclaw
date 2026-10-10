@@ -6,17 +6,54 @@ import android.os.Build
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.HealthConnectFeatures
 import androidx.health.connect.client.aggregate.AggregateMetric
+import androidx.health.connect.client.permission.HealthPermission
+import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
+import androidx.health.connect.client.records.BasalBodyTemperatureRecord
+import androidx.health.connect.client.records.BasalMetabolicRateRecord
+import androidx.health.connect.client.records.BloodGlucoseRecord
+import androidx.health.connect.client.records.BloodPressureRecord
+import androidx.health.connect.client.records.BodyFatRecord
+import androidx.health.connect.client.records.BodyTemperatureRecord
+import androidx.health.connect.client.records.BodyWaterMassRecord
+import androidx.health.connect.client.records.BoneMassRecord
+import androidx.health.connect.client.records.CyclingPedalingCadenceRecord
+import androidx.health.connect.client.records.DistanceRecord
+import androidx.health.connect.client.records.ElevationGainedRecord
 import androidx.health.connect.client.records.ExerciseRouteResult
 import androidx.health.connect.client.records.ExerciseSessionRecord
+import androidx.health.connect.client.records.FloorsClimbedRecord
 import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
+import androidx.health.connect.client.records.HeightRecord
+import androidx.health.connect.client.records.HydrationRecord
+import androidx.health.connect.client.records.LeanBodyMassRecord
+import androidx.health.connect.client.records.NutritionRecord
+import androidx.health.connect.client.records.OxygenSaturationRecord
+import androidx.health.connect.client.records.PlannedExerciseSessionRecord
+import androidx.health.connect.client.records.PowerRecord
 import androidx.health.connect.client.records.Record
+import androidx.health.connect.client.records.RespiratoryRateRecord
 import androidx.health.connect.client.records.RestingHeartRateRecord
+import androidx.health.connect.client.records.SkinTemperatureRecord
 import androidx.health.connect.client.records.SleepSessionRecord
+import androidx.health.connect.client.records.SpeedRecord
+import androidx.health.connect.client.records.StepsCadenceRecord
 import androidx.health.connect.client.records.StepsRecord
+import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
+import androidx.health.connect.client.records.Vo2MaxRecord
+import androidx.health.connect.client.records.WeightRecord
+import androidx.health.connect.client.records.WheelchairPushesRecord
 import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
@@ -30,6 +67,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeParseException
 import java.time.temporal.ChronoUnit
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.asin
 import kotlin.math.cos
 import kotlin.math.roundToInt
@@ -43,23 +81,78 @@ private const val HEALTH_SLEEP_SESSION_LIMIT = 20
 private const val HEALTH_READ_PAGE_LIMIT = 20
 private const val EARTH_MEAN_RADIUS_METERS = 6_371_008.8
 
+// Health Connect reads are binder calls; a few at once keeps a month-long range well inside the
+// caller's timeout without tripping the provider's rate limits.
+private const val HEALTH_READ_PARALLELISM = 6
+
 // A night that ends after midnight starts the day before; read one day back before clipping.
 private val HEALTH_SLEEP_LOOKBACK: Duration = Duration.ofHours(24)
 
 /**
- * Health Connect metrics that health.summary aggregates. Each one is gated by its own read
- * permission, so a partial grant still yields the metrics the user allowed.
+ * Health Connect types that health.summary reads. Each one is gated by its record's read
+ * permission, so a partial grant still yields the types the user allowed. Reproductive-health
+ * types are deliberately absent.
  */
 internal enum class HealthMetric(
   val key: String,
-  val readPermission: String,
+  private val type: HealthRecordType,
+  /** HealthConnectFeatures flag the provider must report available; null for core types. */
+  val feature: Int? = null,
 ) {
-  Steps("steps", "android.permission.health.READ_STEPS"),
-  Sleep("sleep", "android.permission.health.READ_SLEEP"),
-  HeartRate("heartRate", "android.permission.health.READ_HEART_RATE"),
-  RestingHeartRate("restingHeartRate", "android.permission.health.READ_RESTING_HEART_RATE"),
-  Exercise("exercise", "android.permission.health.READ_EXERCISE"),
+  Steps("steps", record<StepsRecord> { it.endTime }),
+  Sleep("sleep", record<SleepSessionRecord> { it.endTime }),
+  HeartRate("heartRate", record<HeartRateRecord> { it.endTime }),
+  RestingHeartRate("restingHeartRate", record<RestingHeartRateRecord> { it.time }),
+  Exercise("exercise", record<ExerciseSessionRecord> { it.endTime }),
+  TotalCalories("totalCalories", record<TotalCaloriesBurnedRecord> { it.endTime }),
+  ActiveCalories("activeCalories", record<ActiveCaloriesBurnedRecord> { it.endTime }),
+  Distance("distance", record<DistanceRecord> { it.endTime }),
+  ElevationGained("elevationGained", record<ElevationGainedRecord> { it.endTime }),
+  FloorsClimbed("floorsClimbed", record<FloorsClimbedRecord> { it.endTime }),
+  WheelchairPushes("wheelchairPushes", record<WheelchairPushesRecord> { it.endTime }),
+  Speed("speed", record<SpeedRecord> { it.endTime }),
+  Power("power", record<PowerRecord> { it.endTime }),
+  StepsCadence("stepsCadence", record<StepsCadenceRecord> { it.endTime }),
+  CyclingPedalingCadence("cyclingPedalingCadence", record<CyclingPedalingCadenceRecord> { it.endTime }),
+  Weight("weight", record<WeightRecord> { it.time }),
+  Height("height", record<HeightRecord> { it.time }),
+  BodyFat("bodyFat", record<BodyFatRecord> { it.time }),
+  LeanBodyMass("leanBodyMass", record<LeanBodyMassRecord> { it.time }),
+  BoneMass("boneMass", record<BoneMassRecord> { it.time }),
+  BodyWaterMass("bodyWaterMass", record<BodyWaterMassRecord> { it.time }),
+  BasalMetabolicRate("basalMetabolicRate", record<BasalMetabolicRateRecord> { it.time }),
+  OxygenSaturation("oxygenSaturation", record<OxygenSaturationRecord> { it.time }),
+  RespiratoryRate("respiratoryRate", record<RespiratoryRateRecord> { it.time }),
+  HeartRateVariability("heartRateVariability", record<HeartRateVariabilityRmssdRecord> { it.time }),
+  BloodPressure("bloodPressure", record<BloodPressureRecord> { it.time }),
+  BloodGlucose("bloodGlucose", record<BloodGlucoseRecord> { it.time }),
+  BodyTemperature("bodyTemperature", record<BodyTemperatureRecord> { it.time }),
+  BasalBodyTemperature("basalBodyTemperature", record<BasalBodyTemperatureRecord> { it.time }),
+  SkinTemperature("skinTemperature", record<SkinTemperatureRecord> { it.endTime }, HealthConnectFeatures.FEATURE_SKIN_TEMPERATURE),
+  Vo2Max("vo2Max", record<Vo2MaxRecord> { it.time }),
+  Nutrition("nutrition", record<NutritionRecord> { it.endTime }),
+  Hydration("hydration", record<HydrationRecord> { it.endTime }),
+  PlannedExercise("plannedExercise", record<PlannedExerciseSessionRecord> { it.endTime }, HealthConnectFeatures.FEATURE_PLANNED_EXERCISE),
+  ;
+
+  val recordType: KClass<out Record> get() = type.kClass
+
+  /** When a record of this type finished, for latestRecordISO. */
+  fun endTime(record: Record): Instant = type.endTime(record)
+
+  /** Some types share a permission (steps cadence uses READ_STEPS, pedaling cadence READ_EXERCISE). */
+  val readPermission: String get() = HealthPermission.getReadPermission(recordType)
+
+  fun isSupported(access: HealthExtendedAccess): Boolean = feature == null || feature in access.supportedFeatures
 }
+
+/** A record class plus its end time; Health Connect keeps the shared interval/instant interfaces internal. */
+internal class HealthRecordType(
+  val kClass: KClass<out Record>,
+  val endTime: (Record) -> Instant,
+)
+
+private inline fun <reified T : Record> record(crossinline endTime: (T) -> Instant) = HealthRecordType(T::class) { endTime(it as T) }
 
 /** Permission strings shared by the settings request flow and the invoke handler. */
 internal object HealthConnectPermissions {
@@ -71,14 +164,22 @@ internal object HealthConnectPermissions {
 
   val metricReads: Set<String> = HealthMetric.entries.map { it.readPermission }.toSet()
 
+  /** Data reads this provider can grant; feature-gated types drop out where the feature is missing. */
+  fun metricReads(supportedFeatures: Set<Int>): Set<String> =
+    HealthMetric.entries
+      .filter { it.feature == null || it.feature in supportedFeatures }
+      .map { it.readPermission }
+      .toSet()
+
   /** Data reads plus the extended-access permissions the provider actually supports. */
   fun requestSet(
     backgroundSupported: Boolean,
     historySupported: Boolean,
     routesSupported: Boolean = false,
+    supportedFeatures: Set<Int> = emptySet(),
   ): Set<String> =
     buildSet {
-      addAll(metricReads)
+      addAll(metricReads(supportedFeatures))
       // Gateway invokes usually arrive while the app is backgrounded behind the node service.
       if (backgroundSupported) add(READ_IN_BACKGROUND)
       if (historySupported) add(READ_HISTORY)
@@ -92,6 +193,8 @@ internal data class HealthExtendedAccess(
   val historySupported: Boolean,
   /** READ_EXERCISE_ROUTES exists from Android 15's platform Health Connect. */
   val routesSupported: Boolean = false,
+  /** Available HealthConnectFeatures flags among those [HealthMetric.feature] needs. */
+  val supportedFeatures: Set<Int> = emptySet(),
 )
 
 internal enum class HealthConnectAvailability {
@@ -169,6 +272,14 @@ internal data class HealthRoute(
   val points: List<HealthRoutePoint> = emptyList(),
 )
 
+internal data class HealthPlannedExercise(
+  val start: Instant,
+  val end: Instant,
+  val type: String,
+  val title: String? = null,
+  val completed: Boolean = false,
+)
+
 /** Health Connect seam for the provider and tests. */
 internal interface HealthDataSource {
   fun availability(context: Context): HealthConnectAvailability
@@ -199,6 +310,25 @@ internal interface HealthDataSource {
     context: Context,
     window: HealthWindow,
   ): List<HealthExerciseSession>
+
+  /** One aggregate call for the [HealthReading.Totals] types in [metrics]. */
+  suspend fun totals(
+    context: Context,
+    window: HealthWindow,
+    metrics: Set<HealthMetric>,
+  ): HealthTotals
+
+  /** Every measurement of one [HealthReading.Latest] or [HealthReading.Stats] type in the window. */
+  suspend fun samples(
+    context: Context,
+    window: HealthWindow,
+    metric: HealthMetric,
+  ): List<HealthSample>
+
+  suspend fun plannedExercises(
+    context: Context,
+    window: HealthWindow,
+  ): List<HealthPlannedExercise>
 }
 
 internal object HealthConnectDataSource : HealthDataSource {
@@ -215,6 +345,11 @@ internal object HealthConnectDataSource : HealthDataSource {
     val features = HealthConnectClient.getOrCreate(context).features
     return HealthExtendedAccess(
       routesSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM,
+      supportedFeatures =
+        HealthMetric.entries
+          .mapNotNull { it.feature }
+          .filter { features.getFeatureStatus(it) == HealthConnectFeatures.FEATURE_STATUS_AVAILABLE }
+          .toSet(),
       backgroundSupported =
         features.getFeatureStatus(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_IN_BACKGROUND) ==
           HealthConnectFeatures.FEATURE_STATUS_AVAILABLE,
@@ -234,16 +369,7 @@ internal object HealthConnectDataSource : HealthDataSource {
     context: Context,
     metrics: Set<HealthMetric>,
     before: Instant,
-  ): Map<HealthMetric, Instant?> =
-    metrics.associateWith { metric ->
-      when (metric) {
-        HealthMetric.Steps -> newest(context, StepsRecord::class, before)?.endTime
-        HealthMetric.Sleep -> newest(context, SleepSessionRecord::class, before)?.endTime
-        HealthMetric.HeartRate -> newest(context, HeartRateRecord::class, before)?.endTime
-        HealthMetric.RestingHeartRate -> newest(context, RestingHeartRateRecord::class, before)?.time
-        HealthMetric.Exercise -> newest(context, ExerciseSessionRecord::class, before)?.endTime
-      }
-    }
+  ): Map<HealthMetric, Instant?> = metrics.associateWith { metric -> newest(context, metric.anyRecordType, before)?.let(metric::endTime) }
 
   // Newest by start time; without READ_HEALTH_DATA_HISTORY Health Connect only returns the last 30 days.
   private suspend fun <T : Record> newest(
@@ -328,6 +454,54 @@ internal object HealthConnectDataSource : HealthDataSource {
       )
     }
 
+  override suspend fun totals(
+    context: Context,
+    window: HealthWindow,
+    metrics: Set<HealthMetric>,
+  ): HealthTotals {
+    val fields = metrics.flatMap { (HEALTH_READINGS[it] as? HealthReading.Totals)?.fields.orEmpty() }
+    if (fields.isEmpty()) return HealthTotals()
+    val result =
+      HealthConnectClient.getOrCreate(context).aggregate(
+        AggregateRequest(metrics = fields.map { it.metric }.toSet(), timeRangeFilter = TimeRangeFilter.between(window.start, window.end)),
+      )
+    return HealthTotals(
+      values = fields.mapNotNull { field -> field.read(result)?.let { field.key to it } }.toMap(),
+      dataOrigins = result.dataOrigins.map { it.packageName }.toSet(),
+    )
+  }
+
+  override suspend fun samples(
+    context: Context,
+    window: HealthWindow,
+    metric: HealthMetric,
+  ): List<HealthSample> {
+    val sample =
+      when (val reading = HEALTH_READINGS[metric]) {
+        is HealthReading.Latest -> reading.sample
+        is HealthReading.Stats -> reading.sample
+        else -> return emptyList()
+      }
+    return readAll(context, metric.anyRecordType, window).map(sample)
+  }
+
+  override suspend fun plannedExercises(
+    context: Context,
+    window: HealthWindow,
+  ): List<HealthPlannedExercise> =
+    readAll(context, PlannedExerciseSessionRecord::class, window).map { record ->
+      HealthPlannedExercise(
+        start = record.startTime,
+        end = record.endTime,
+        type = healthExerciseTypeName(record.exerciseType),
+        title = record.title?.trim()?.ifEmpty { null },
+        completed = record.completedExerciseSessionId != null,
+      )
+    }
+
+  @Suppress("UNCHECKED_CAST")
+  private val HealthMetric.anyRecordType: KClass<Record> get() = recordType as KClass<Record>
+
   // Unknown and generic sleeping stages count as asleep, matching HealthKit's unspecified sleep.
   private fun isAsleepStage(stage: Int): Boolean =
     when (stage) {
@@ -395,14 +569,15 @@ class HealthHandler internal constructor(
     }
     return try {
       val granted = dataSource.grantedPermissions(appContext)
-      val metrics = HealthMetric.entries.filter { it.readPermission in granted }.toSet()
+      val access = dataSource.extendedAccessSupport(appContext)
+      val metrics = HealthMetric.entries.filter { it.readPermission in granted && it.isSupported(access) }.toSet()
       if (metrics.isEmpty()) {
         return nodeInvokeError(
           "HEALTH_PERMISSION_REQUIRED",
           "allow OpenClaw to read steps, sleep, heart rate, or exercise in Health Connect (OpenClaw Settings → Phone Capabilities → Health Connect)",
         )
       }
-      GatewaySession.InvokeResult.ok(summarize(request, metrics, granted).toString())
+      GatewaySession.InvokeResult.ok(summarize(request, metrics, granted, access).toString())
     } catch (err: CancellationException) {
       throw err
     } catch (err: SecurityException) {
@@ -436,107 +611,214 @@ class HealthHandler internal constructor(
     }
   }
 
+  /** A read that succeeded, so a null value still means "nothing there" rather than "failed". */
+  private class Read<T>(
+    val value: T,
+  )
+
+  /**
+   * Runs the reads in parallel. The original five types fail the whole summary as before (their
+   * SecurityException names the background-access problem); every other type fails on its own and
+   * is named in `readErrors`.
+   */
+  private class Reads(
+    private val scope: CoroutineScope,
+  ) {
+    private val gate = Semaphore(HEALTH_READ_PARALLELISM)
+    val errors = ConcurrentHashMap<String, String>()
+
+    fun <T> required(block: suspend () -> T): Deferred<T> = scope.async { gate.withPermit { block() } }
+
+    fun <T> isolated(
+      key: String,
+      block: suspend () -> T,
+    ): Deferred<Read<T>?> =
+      scope.async {
+        try {
+          Read(gate.withPermit { block() })
+        } catch (err: CancellationException) {
+          throw err
+        } catch (err: Exception) {
+          errors[key] = err.message ?: err::class.java.simpleName
+          null
+        }
+      }
+
+    /** One aggregate call for all [metrics]; if Health Connect rejects it, one call per type. */
+    fun totals(
+      metrics: Set<HealthMetric>,
+      read: suspend (Set<HealthMetric>) -> HealthTotals,
+    ): Deferred<HealthTotals> =
+      scope.async {
+        if (metrics.isEmpty()) return@async HealthTotals()
+        try {
+          gate.withPermit { read(metrics) }
+        } catch (err: CancellationException) {
+          throw err
+        } catch (err: Exception) {
+          if (metrics.size == 1) {
+            errors[metrics.single().key] = err.message ?: err::class.java.simpleName
+            return@async HealthTotals()
+          }
+          val parts = metrics.map { metric -> isolated(metric.key) { read(setOf(metric)) } }.awaitAll().mapNotNull { it?.value }
+          HealthTotals(parts.flatMap { it.values.entries }.associate { it.key to it.value }, parts.flatMap { it.dataOrigins }.toSet())
+        }
+      }
+  }
+
+  /** The table-driven reads for one window. */
+  private class WindowExtras(
+    val metrics: Set<HealthMetric>,
+    val totals: HealthTotals,
+    val samples: Map<HealthMetric, List<HealthSample>>,
+    val planned: List<HealthPlannedExercise>?,
+    val workoutTotals: Map<HealthExerciseSession, HealthTotals>,
+  )
+
   private suspend fun summarize(
     request: HealthSummaryRequest,
     metrics: Set<HealthMetric>,
     granted: Set<String>,
-  ): JsonObject {
-    val sleepSessions =
-      if (HealthMetric.Sleep in metrics) dataSource.sleepSessions(appContext, request.window) else null
-    val exerciseSessions =
-      if (HealthMetric.Exercise in metrics) dataSource.exerciseSessions(appContext, request.window) else null
-    val total = dataSource.aggregate(appContext, request.window, metrics)
-    val latest = dataSource.latestRecordTimes(appContext, metrics, clock.instant())
-    val access = dataSource.extendedAccessSupport(appContext)
-    val perDay =
-      if (request.days.size > 1) {
-        request.days.map { day -> day to dataSource.aggregate(appContext, day.window, metrics) }
-      } else {
-        emptyList()
-      }
-    val origins =
-      buildSet {
-        addAll(total.dataOrigins)
-        sleepSessions?.forEach { session -> session.dataOrigin?.let(::add) }
-        exerciseSessions?.forEach { session -> session.dataOrigin?.let(::add) }
-      }
-    val zone = clock.zone
-    val routes =
-      when {
-        HealthConnectPermissions.READ_EXERCISE_ROUTES !in granted -> RouteOutput.Hidden
-        request.includeRoutes -> RouteOutput.WithPoints
-        else -> RouteOutput.Summary
-      }
+    access: HealthExtendedAccess,
+  ): JsonObject =
+    coroutineScope {
+      val reads = Reads(this)
+      val sleepRead =
+        if (HealthMetric.Sleep in metrics) reads.required { dataSource.sleepSessions(appContext, request.window) } else null
+      val exerciseRead =
+        if (HealthMetric.Exercise in metrics) reads.required { dataSource.exerciseSessions(appContext, request.window) } else null
+      val totalRead = reads.required { dataSource.aggregate(appContext, request.window, metrics) }
+      val perDayReads =
+        if (request.days.size > 1) {
+          request.days.map { day -> day to reads.required { dataSource.aggregate(appContext, day.window, metrics) } }
+        } else {
+          emptyList()
+        }
+      val now = clock.instant()
+      val latestReads = metrics.map { metric -> metric to reads.isolated(metric.key) { dataSource.latestRecordTimes(appContext, setOf(metric), now)[metric] } }
+      val totalsMetrics = metrics.filter { HEALTH_READINGS[it] is HealthReading.Totals }.toSet()
+      val readTotals: suspend (HealthWindow, Set<HealthMetric>) -> HealthTotals = { window, types -> dataSource.totals(appContext, window, types) }
+      val windowTotalsRead = reads.totals(totalsMetrics) { readTotals(request.window, it) }
+      val dayTotalsReads = perDayReads.map { (day, _) -> day to reads.totals(totalsMetrics) { readTotals(day.window, it) } }
+      val sampleReads =
+        metrics
+          .filter { HEALTH_READINGS[it] is HealthReading.Latest || HEALTH_READINGS[it] is HealthReading.Stats }
+          .map { metric -> metric to reads.isolated(metric.key) { dataSource.samples(appContext, request.window, metric) } }
+      val plannedRead =
+        if (HealthMetric.PlannedExercise in metrics) {
+          reads.isolated(HealthMetric.PlannedExercise.key) { dataSource.plannedExercises(appContext, request.window) }
+        } else {
+          null
+        }
 
-    return buildJsonObject {
-      put("period", request.period)
-      put("startISO", request.window.start.toString())
-      put("endISO", request.window.end.toString())
-      put("timeZoneIdentifier", zone.id)
-      putMetrics(request.window, total, sleepSessions, exerciseSessions, routes)
-      if (request.period != "today" && request.days.isNotEmpty()) {
-        val firstDay = request.days.first()
-        val lastDay = request.days.last()
-        put("startDate", firstDay.date.toString())
-        put("endDate", lastDay.date.toString())
-      }
-      if (sleepSessions != null) {
-        val overlapping =
-          sleepSessions
-            .filter { it.end > request.window.start && it.start < request.window.end }
-            .sortedBy { it.start }
-            .takeLast(HEALTH_SLEEP_SESSION_LIMIT)
+      val sleepSessions = sleepRead?.await()
+      val exerciseSessions = exerciseRead?.await()
+      val workoutMetrics = HEALTH_WORKOUT_TOTAL_METRICS.filter { it in metrics }.toSet()
+      val workoutTotals =
+        exerciseSessions
+          .orEmpty()
+          .filter { workoutMetrics.isNotEmpty() && it.start >= request.window.start && it.start < request.window.end }
+          .map { workout -> workout to reads.totals(workoutMetrics) { readTotals(HealthWindow(workout.start, workout.end), it) } }
+          .associate { (workout, read) -> workout to read.await() }
+      val total = totalRead.await()
+      val perDay = perDayReads.map { (day, read) -> day to read.await() }
+      val latest = latestReads.mapNotNull { (metric, read) -> read.await()?.let { metric to it.value } }.toMap()
+      val samples = sampleReads.mapNotNull { (metric, read) -> read.await()?.let { metric to it.value } }.toMap()
+      val planned = plannedRead?.await()?.value
+      val windowTotals = windowTotalsRead.await()
+      val dayTotals = dayTotalsReads.associate { (day, read) -> day to read.await() }
+
+      fun extras(totals: HealthTotals) = WindowExtras(metrics, totals, samples, planned, workoutTotals)
+
+      val origins =
+        buildSet {
+          addAll(total.dataOrigins)
+          addAll(windowTotals.dataOrigins)
+          sleepSessions?.forEach { session -> session.dataOrigin?.let(::add) }
+          exerciseSessions?.forEach { session -> session.dataOrigin?.let(::add) }
+          samples.values.flatten().forEach { sample -> sample.dataOrigin?.let(::add) }
+        }
+      val zone = clock.zone
+      val routes =
+        when {
+          HealthConnectPermissions.READ_EXERCISE_ROUTES !in granted -> RouteOutput.Hidden
+          request.includeRoutes -> RouteOutput.WithPoints
+          else -> RouteOutput.Summary
+        }
+
+      buildJsonObject {
+        put("period", request.period)
+        put("startISO", request.window.start.toString())
+        put("endISO", request.window.end.toString())
+        put("timeZoneIdentifier", zone.id)
+        putMetrics(request.window, total, sleepSessions, exerciseSessions, routes, extras(windowTotals))
+        if (request.period != "today" && request.days.isNotEmpty()) {
+          val firstDay = request.days.first()
+          val lastDay = request.days.last()
+          put("startDate", firstDay.date.toString())
+          put("endDate", lastDay.date.toString())
+        }
+        if (sleepSessions != null) {
+          val overlapping =
+            sleepSessions
+              .filter { it.end > request.window.start && it.start < request.window.end }
+              .sortedBy { it.start }
+              .takeLast(HEALTH_SLEEP_SESSION_LIMIT)
+          put(
+            "sleepSessions",
+            buildJsonArray {
+              for (session in overlapping) {
+                add(
+                  buildJsonObject {
+                    put("startISO", session.start.toString())
+                    put("endISO", session.end.toString())
+                    mergedDuration(session.asleep, HealthWindow(session.start, session.end))
+                      ?.let { put("asleepMinutes", roundedMinutes(it)) }
+                  },
+                )
+              }
+            },
+          )
+        }
+        if (perDay.isNotEmpty()) {
+          put(
+            "days",
+            buildJsonArray {
+              for ((day, aggregate) in perDay) {
+                add(
+                  buildJsonObject {
+                    put("date", day.date.toString())
+                    put("startISO", day.window.start.toString())
+                    put("endISO", day.window.end.toString())
+                    putMetrics(day.window, aggregate, sleepSessions, exerciseSessions, routes, extras(dayTotals[day] ?: HealthTotals()))
+                  },
+                )
+              }
+            },
+          )
+        }
+        val missing = HealthMetric.entries.filter { it.isSupported(access) && it !in metrics }.map { it.key }
+        if (missing.isNotEmpty()) put("missingPermissions", buildJsonArray { missing.forEach { add(JsonPrimitive(it)) } })
+        // Lets a daily collector tell "no new data synced yet" apart from "nothing happened".
         put(
-          "sleepSessions",
-          buildJsonArray {
-            for (session in overlapping) {
-              add(
-                buildJsonObject {
-                  put("startISO", session.start.toString())
-                  put("endISO", session.end.toString())
-                  mergedDuration(session.asleep, HealthWindow(session.start, session.end))
-                    ?.let { put("asleepMinutes", roundedMinutes(it)) }
-                },
-              )
+          "latestRecordISO",
+          buildJsonObject {
+            // A type whose read failed is left out here and named in readErrors.
+            for (metric in HealthMetric.entries.filter { it in metrics && it in latest }) {
+              put(metric.key, latest[metric]?.toString())
             }
           },
         )
+        put("backgroundAccess", HealthConnectPermissions.READ_IN_BACKGROUND in granted)
+        put("backgroundSupported", access.backgroundSupported)
+        put("historyAccess", HealthConnectPermissions.READ_HISTORY in granted)
+        put("dataOrigins", buildJsonArray { origins.sorted().forEach { add(JsonPrimitive(it)) } })
+        if (reads.errors.isNotEmpty()) {
+          put("readErrors", buildJsonObject { reads.errors.toSortedMap().forEach { (key, message) -> put(key, message) } })
+        }
+        put("source", "healthConnect")
       }
-      if (perDay.isNotEmpty()) {
-        put(
-          "days",
-          buildJsonArray {
-            for ((day, aggregate) in perDay) {
-              add(
-                buildJsonObject {
-                  put("date", day.date.toString())
-                  put("startISO", day.window.start.toString())
-                  put("endISO", day.window.end.toString())
-                  putMetrics(day.window, aggregate, sleepSessions, exerciseSessions, routes)
-                },
-              )
-            }
-          },
-        )
-      }
-      val missing = HealthMetric.entries.filter { it !in metrics }.map { it.key }
-      if (missing.isNotEmpty()) put("missingPermissions", buildJsonArray { missing.forEach { add(JsonPrimitive(it)) } })
-      // Lets a daily collector tell "no new data synced yet" apart from "nothing happened".
-      put(
-        "latestRecordISO",
-        buildJsonObject {
-          for (metric in HealthMetric.entries.filter { it in metrics }) {
-            put(metric.key, latest[metric]?.toString())
-          }
-        },
-      )
-      put("backgroundAccess", HealthConnectPermissions.READ_IN_BACKGROUND in granted)
-      put("backgroundSupported", access.backgroundSupported)
-      put("historyAccess", HealthConnectPermissions.READ_HISTORY in granted)
-      put("dataOrigins", buildJsonArray { origins.sorted().forEach { add(JsonPrimitive(it)) } })
-      put("source", "healthConnect")
     }
-  }
 
   private fun JsonObjectBuilder.putMetrics(
     window: HealthWindow,
@@ -544,6 +826,7 @@ class HealthHandler internal constructor(
     sleepSessions: List<HealthSleepSession>?,
     exerciseSessions: List<HealthExerciseSession>?,
     routes: RouteOutput,
+    extras: WindowExtras,
   ) {
     aggregate.stepCount?.let { put("stepCount", it) }
     sleepSessions
@@ -564,6 +847,25 @@ class HealthHandler internal constructor(
     aggregate.heartRateAvgBpm?.let { put("heartRateAvgBpm", it) }
     aggregate.heartRateMinBpm?.let { put("heartRateMinBpm", it) }
     aggregate.heartRateMaxBpm?.let { put("heartRateMaxBpm", it) }
+    putReadings(window, extras.metrics, extras.totals, extras.samples)
+    extras.planned?.let { planned ->
+      put(
+        "plannedWorkouts",
+        buildJsonArray {
+          for (plan in planned.filter { it.start >= window.start && it.start < window.end }.sortedBy { it.start }) {
+            add(
+              buildJsonObject {
+                put("type", plan.type)
+                plan.title?.let { put("title", it) }
+                put("startISO", plan.start.toString())
+                put("endISO", plan.end.toString())
+                put("completed", plan.completed)
+              },
+            )
+          }
+        },
+      )
+    }
     // Present whenever exercise is readable, so an empty list means "no workouts" rather than "no access".
     if (workouts != null) {
       put(
@@ -578,6 +880,7 @@ class HealthHandler internal constructor(
                 put("endISO", workout.end.toString())
                 put("durationMinutes", roundedMinutes(Duration.between(workout.start, workout.end)))
                 workout.dataOrigin?.let { put("dataOrigin", it) }
+                extras.workoutTotals[workout]?.values?.forEach { (key, value) -> putReadingValue(key, value) }
                 putRoute(workout.route, routes)
               },
             )
