@@ -96,6 +96,23 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "ref=$(git rev-parse HEAD) tag=${tag}"
 
+      # debug 署名の鍵を固定する。無いと runner が毎回新しい debug 鍵を作り、
+      # 証明書が変わって端末で上書き更新できなくなる（9/22 と 10/10 で別鍵だった）。
+      # 控えは持ち主の Mac の ~/.config/openclaw-android/debug.keystore。
+      - name: debug 署名の鍵を置く
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEBUG_KEYSTORE_B64}" ]; then
+            echo "::warning::ANDROID_DEBUG_KEYSTORE_BASE64 が無いので、この実行だけの debug 鍵で署名される"
+            exit 0
+          fi
+          mkdir -p "${HOME}/.android"
+          printf '%s' "${DEBUG_KEYSTORE_B64}" | base64 -d > "${HOME}/.android/debug.keystore"
+          chmod 600 "${HOME}/.android/debug.keystore"
+          echo "固定の debug 鍵を置いた"
+
       # 鍵は Secrets から。**無ければ debug 署名で続ける。**
       # 鍵の有無でビルドが失敗しないようにしておく。
       - name: 署名鍵を用意する
