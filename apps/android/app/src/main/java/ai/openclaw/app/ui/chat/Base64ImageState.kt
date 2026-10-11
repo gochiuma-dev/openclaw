@@ -1,5 +1,6 @@
 package ai.openclaw.app.ui.chat
 
+import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -15,6 +16,8 @@ import kotlinx.coroutines.withContext
 internal data class Base64ImageState(
   val image: ImageBitmap?,
   val failed: Boolean,
+  /** The payload exceeds [Base64ImageSource.maxBase64Chars], so decoding was not attempted. */
+  val tooLarge: Boolean = false,
 )
 
 /** Decodes a base64 image off the UI thread and reports failure state. */
@@ -33,12 +36,14 @@ internal fun rememberBase64ImageState(
         try {
           val bitmap = decodeBase64Bitmap(base64, source = source) ?: return@withContext null
           bitmap.asImageBitmap()
-        } catch (_: Throwable) {
+        } catch (err: Throwable) {
+          // Surface the real cause (OOM, corrupt data) instead of a bare "could not decode".
+          Log.w("OpenClawImage", "base64 image decode failed (${base64.length} chars)", err)
           null
         }
       }
     if (image == null) failed = true
   }
 
-  return Base64ImageState(image = image, failed = failed)
+  return Base64ImageState(image = image, failed = failed, tooLarge = base64.length > source.maxBase64Chars)
 }
