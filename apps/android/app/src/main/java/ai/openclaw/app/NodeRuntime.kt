@@ -6964,14 +6964,15 @@ class NodeRuntime private constructor(
     return snapshot
   }
 
-  /** Lists one directory of the active agent's workspace (read-only RPC). */
+  /** Lists one directory of [agentId]'s workspace, or the active agent's (read-only RPC). */
   suspend fun listWorkspaceFiles(
     path: String?,
     offset: Int? = null,
+    agentId: String? = null,
   ): GatewayWorkspaceListing {
     val params =
       buildJsonObject {
-        put("agentId", JsonPrimitive(workspaceAgentId()))
+        put("agentId", JsonPrimitive(agentId?.trim()?.ifEmpty { null } ?: workspaceAgentId()))
         if (!path.isNullOrEmpty()) put("path", JsonPrimitive(path))
         if (offset != null && offset > 0) put("offset", JsonPrimitive(offset))
       }
@@ -6981,10 +6982,13 @@ class NodeRuntime private constructor(
   }
 
   /** Fetches one workspace file preview (UTF-8 text or base64 image). */
-  suspend fun fetchWorkspaceFile(path: String): GatewayWorkspaceFile {
+  suspend fun fetchWorkspaceFile(
+    path: String,
+    agentId: String? = null,
+  ): GatewayWorkspaceFile {
     val params =
       buildJsonObject {
-        put("agentId", JsonPrimitive(workspaceAgentId()))
+        put("agentId", JsonPrimitive(agentId?.trim()?.ifEmpty { null } ?: workspaceAgentId()))
         put("path", JsonPrimitive(path))
       }
     val res = operatorSession.request("agents.workspace.get", params.toString(), timeoutMs = 30_000)

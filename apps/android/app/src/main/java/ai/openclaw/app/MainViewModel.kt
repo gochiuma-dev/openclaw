@@ -1884,9 +1884,13 @@ class MainViewModel private constructor(
   suspend fun listWorkspaceFiles(
     path: String?,
     offset: Int? = null,
-  ): GatewayWorkspaceListing = ensureRuntime().listWorkspaceFiles(path = path, offset = offset)
+    agentId: String? = null,
+  ): GatewayWorkspaceListing = ensureRuntime().listWorkspaceFiles(path = path, offset = offset, agentId = agentId)
 
-  suspend fun fetchWorkspaceFile(path: String): GatewayWorkspaceFile = ensureRuntime().fetchWorkspaceFile(path)
+  suspend fun fetchWorkspaceFile(
+    path: String,
+    agentId: String? = null,
+  ): GatewayWorkspaceFile = ensureRuntime().fetchWorkspaceFile(path, agentId)
 
   fun setChatThinkingLevel(level: String) {
     ensureRuntime().chat.setThinkingLevel(level)
