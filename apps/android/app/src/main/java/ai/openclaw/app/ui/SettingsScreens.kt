@@ -1464,6 +1464,7 @@ private fun PhoneCapabilitiesScreen(
     if (SensitiveFeatureConfig.accessibilityControlEnabled) {
       FlavorPhoneCapabilitiesSettings(viewModel)
     }
+    HealthConnectSettingsPanel(viewModel)
     ClawPanel(verticalArrangement = Arrangement.spacedBy(8.dp)) {
       Text(text = nativeString("Location"), style = ClawTheme.type.section, color = ClawTheme.colors.text)
       ClawSegmentedControl(
@@ -1591,6 +1592,14 @@ private fun GatewaySettingsScreen(
   var pendingForgetStableId by remember { mutableStateOf<String?>(null) }
   var pendingRenameStableId by rememberSaveable { mutableStateOf<String?>(null) }
   val renameScope = rememberCoroutineScope()
+  val savedGatewayStableId =
+    remember(manualHost, manualPort, manualTls) {
+      GatewayEndpoint.manual(host = manualHost, port = manualPort, tlsEnabled = manualTls).stableId
+    }
+  var headerEditor by remember(savedGatewayStableId) { mutableStateOf(GatewayHeaderEditorState()) }
+  LaunchedEffect(savedGatewayStableId) {
+    headerEditor = gatewayHeaderEditorState(viewModel.gatewayCustomHeaderNames(savedGatewayStableId))
+  }
   val transport =
     remember(hostInput, tlsInput) {
       gatewayManualTransportPresentation(
@@ -1603,6 +1612,7 @@ private fun GatewaySettingsScreen(
     setupValidationText = null
     manualValidationText = null
     viewModel.saveGatewayConfigAndConnect(plan)
+    headerEditor = headerEditor.committed()
   }
 
   pendingSetupResetPlan?.let { plan ->
@@ -1727,6 +1737,7 @@ private fun GatewaySettingsScreen(
         tokenInput = if (useSetupCode) "" else tokenInput,
         bootstrapTokenInput = if (useSetupCode) "" else bootstrapTokenInput,
         passwordInput = if (useSetupCode) "" else passwordInput,
+        customHeaderDrafts = headerEditor.drafts(),
       )
     if (plan == null) {
       val message = nativeString("Enter a valid setup code or gateway address.")
@@ -2021,6 +2032,10 @@ private fun GatewaySettingsScreen(
           placeholder = "",
           label = nativeString("Password"),
           secret = true,
+        )
+        GatewayAdvancedHeadersSection(
+          state = headerEditor,
+          onStateChange = { headerEditor = it },
         )
         manualValidationText?.let {
           Text(text = it, style = ClawTheme.type.caption, color = ClawTheme.colors.warning)

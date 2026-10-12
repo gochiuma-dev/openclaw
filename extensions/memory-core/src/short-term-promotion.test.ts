@@ -468,6 +468,50 @@ describe("short-term promotion", () => {
     ).toBe(true);
   });
 
+  it("keeps searched recalls when nightly ingestion overflows the recall store", async (workspaceDir) => {
+    const maxEntries = testing.SHORT_TERM_RECALL_MAX_ENTRIES;
+    await recordMemoryRecalls(
+      workspaceDir,
+      "green tea preference",
+      Array.from({ length: 3 }, (_, index) =>
+        memoryRecallResult(
+          "memory/2026-04-01.md",
+          index + 1,
+          index + 1,
+          0.8,
+          `Searched recall ${index}`,
+        ),
+      ),
+      { nowMs: Date.parse("2026-04-01T10:00:00.000Z") },
+    );
+    await recordMemoryRecalls(
+      workspaceDir,
+      "__dreaming_daily__:2026-04-02",
+      Array.from({ length: maxEntries + 600 }, (_, index) =>
+        memoryRecallResult(
+          "memory/2026-04-02.md",
+          index + 1,
+          index + 1,
+          0.9,
+          `Ingested daily ${index}`,
+        ),
+      ),
+      {
+        signalType: "daily",
+        dedupeByQueryPerDay: true,
+        dayBucket: "2026-04-02",
+        nowMs: Date.parse("2026-04-02T03:00:00.000Z"),
+      },
+    );
+
+    const entries = Object.values(await readRecallStoreEntries(workspaceDir));
+    expect(entries).toHaveLength(maxEntries);
+    const searched = entries.filter((entry) =>
+      readEntrySnippet(entry).startsWith("Searched recall "),
+    );
+    expect(searched.map((entry) => entry.recallCount)).toEqual([1, 1, 1]);
+  });
+
   it("keeps long-snippet claim identity stable while storing capped snippets", async (workspaceDir) => {
     const maxSnippetChars = testing.SHORT_TERM_RECALL_MAX_SNIPPET_CHARS;
     const longSnippet = `Stable claim identity ${"x".repeat(maxSnippetChars + 100)}`;

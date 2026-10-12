@@ -31,6 +31,12 @@ import {
 } from "../infra/event-session-routing.js";
 import { requestHeartbeat } from "../infra/heartbeat-wake.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
+import {
+  appendNotificationLogEntry,
+  resolveNotificationForwardingPolicy,
+  shouldLogNotification,
+  shouldWakeForNotification,
+} from "../infra/notification-log.js";
 import { buildOutboundSessionContext } from "../infra/outbound/session-context.js";
 import { resolveOutboundTarget } from "../infra/outbound/targets.js";
 import { withSystemEventOwner } from "../infra/system-event-ownership.js";
@@ -865,18 +871,59 @@ export const handleNodeEvent = async (
         }
       }
 
-      const queued = enqueueSystemEvent(
-        summary,
-        withSystemEventOwner({ sessionKey, contextKey: `notification:${key}` }, agentId),
+      const notificationsConfig = getRuntimeConfig();
+      const policy = resolveNotificationForwardingPolicy(
+        notificationsConfig.gateway?.nodes?.notifications,
       );
-      if (queued) {
-        requestHeartbeat({
-          source: "notifications-event",
-          intent: "event",
-          reason: "notifications-event",
-          agentId,
-          sessionKey,
+      const timeZone = notificationsConfig.agents?.defaults?.userTimezone;
+      const wake = shouldWakeForNotification(policy, packageName ?? null);
+
+      const wakeNow = () => {
+        const queued = enqueueSystemEvent(
+          summary,
+          withSystemEventOwner({ sessionKey, contextKey: `notification:${key}` }, agentId),
+        );
+        if (queued) {
+          requestHeartbeat({
+            source: "notifications-event",
+            intent: "event",
+            reason: "notifications-event",
+            agentId,
+            sessionKey,
+          });
+        }
+      };
+
+      if (shouldLogNotification(policy)) {
+        // The log is the durable record in batched modes, so a failed append
+        // must not silently drop the notification: fall back to the legacy
+        // wake, which at least surfaces it on the next turn.
+        void appendNotificationLogEntry(
+          policy,
+          {
+            ts: new Date().toISOString(),
+            change,
+            nodeId,
+            key,
+            packageName: packageName ?? null,
+            title,
+            text,
+            sessionKey,
+            woke: wake,
+          },
+          timeZone,
+        ).catch((error: unknown) => {
+          ctx.logGateway.warn(
+            `notification log append failed node=${nodeId} key=${key}: ${formatErrorMessage(error)}`,
+          );
+          if (!wake) {
+            wakeNow();
+          }
         });
+      }
+
+      if (wake) {
+        wakeNow();
       }
       return undefined;
     }

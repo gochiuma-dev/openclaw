@@ -1,19 +1,27 @@
 package ai.openclaw.app.ui
 
+import ai.openclaw.app.GatewayAgentSummary
 import ai.openclaw.app.GatewayWorkspaceEntry
 import ai.openclaw.app.GatewayWorkspaceFile
 import ai.openclaw.app.MainViewModel
+import ai.openclaw.app.gateway.GatewayRequestDefinitiveFailure
+import ai.openclaw.app.gateway.GatewayRequestOutcomeUnknown
+import ai.openclaw.app.gateway.GatewayRequestRejected
 import ai.openclaw.app.i18n.nativeString
+import ai.openclaw.app.resolveAgentIdFromMainSessionKey
+import ai.openclaw.app.ui.chat.Base64ImageSource
 import ai.openclaw.app.ui.chat.ChatCodeBlock
 import ai.openclaw.app.ui.chat.rememberBase64ImageState
 import ai.openclaw.app.ui.design.ClawEmptyState
 import ai.openclaw.app.ui.design.ClawPlainIconButton
 import ai.openclaw.app.ui.design.ClawScaffold
+import ai.openclaw.app.ui.design.ClawSegmentedControl
 import ai.openclaw.app.ui.design.ClawTheme
 import android.content.Context
 import android.content.Intent
 import android.text.format.Formatter
 import android.util.Base64
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
@@ -63,6 +71,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.DateFormat
@@ -70,7 +79,36 @@ import java.util.Date
 import java.util.UUID
 
 /**
- * Read-only workspace browser for the active agent, backed by the
+ * Which agent's workspace the browser opens on: the owner of the open conversation, so a chat
+ * opened from another agent's sidebar shows that agent's files. Falls back to the runtime's
+ * active agent (main session, then gateway default).
+ */
+internal fun initialWorkspaceAgentId(
+  chatSessionKey: String?,
+  chatOwnerAgentId: String?,
+  mainSessionKey: String?,
+  gatewayDefaultAgentId: String?,
+): String =
+  resolveAgentIdFromMainSessionKey(chatSessionKey)
+    ?: chatOwnerAgentId?.trim()?.ifEmpty { null }
+    ?: resolveAgentIdFromMainSessionKey(mainSessionKey)
+    ?: gatewayDefaultAgentId?.trim()?.ifEmpty { null }
+    ?: "main"
+
+/** Picker options: the gateway's agents, plus the selected id while agents.list has not loaded it. */
+internal fun workspaceAgentOptions(
+  agents: List<GatewayAgentSummary>,
+  selectedAgentId: String,
+): List<GatewayAgentSummary> = if (agents.any { it.id == selectedAgentId }) agents else agents + GatewayAgentSummary(selectedAgentId, null, null)
+
+private fun workspaceAgentLabel(agent: GatewayAgentSummary): String {
+  val name = agent.name?.trim()?.ifEmpty { null } ?: agent.id
+  val emoji = agent.emoji?.trim().orEmpty()
+  return listOf(emoji, name).filter { it.isNotEmpty() }.joinToString(" ")
+}
+
+/**
+ * Read-only workspace browser for one agent, backed by the
  * `agents.workspace.list` / `agents.workspace.get` gateway RPCs.
  */
 @Composable
@@ -80,10 +118,15 @@ internal fun WorkspaceFilesScreen(
 ) {
   val mainSessionKey by viewModel.mainSessionKey.collectAsState()
   val gatewayDefaultAgentId by viewModel.gatewayDefaultAgentId.collectAsState()
+  val chatSessionKey by viewModel.chatSessionKey.collectAsState()
+  val chatOwnerAgentId by viewModel.chatSessionOwnerAgentId.collectAsState()
+  val agents by viewModel.gatewayAgents.collectAsState()
+  val initialAgentId = initialWorkspaceAgentId(chatSessionKey, chatOwnerAgentId, mainSessionKey, gatewayDefaultAgentId)
+  // A new conversation or gateway re-seeds the choice; otherwise the user's pick sticks.
+  var agentId by rememberSaveable(initialAgentId) { mutableStateOf(initialAgentId) }
 
-  // Runtime routing derives the active agent from these two facts. Re-key the
-  // local browser with the same facts so paths from one agent never cross over.
-  key(mainSessionKey, gatewayDefaultAgentId) {
+  // Re-key the browser per agent (and gateway) so paths from one workspace never cross into another.
+  key(agentId, gatewayDefaultAgentId) {
     var pathStack by rememberSaveable { mutableStateOf(listOf("")) }
     var previewPath by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -99,12 +142,16 @@ internal fun WorkspaceFilesScreen(
     if (openPreview != null) {
       WorkspaceFilePreview(
         viewModel = viewModel,
+        agentId = agentId,
         path = openPreview,
         onBack = { previewPath = null },
       )
     } else {
       WorkspaceDirectoryScreen(
         viewModel = viewModel,
+        agentId = agentId,
+        agentOptions = workspaceAgentOptions(agents, agentId),
+        onSelectAgent = { agentId = it },
         path = pathStack.last(),
         onBack = {
           if (pathStack.size > 1) pathStack = pathStack.dropLast(1) else onBack()
@@ -116,9 +163,63 @@ internal fun WorkspaceFilesScreen(
   }
 }
 
+/** Why a workspace file preview failed, so the message names the cause instead of guessing. */
+internal enum class WorkspacePreviewFailure {
+  /** Over the gateway's preview limit (text) or its 5 MB image limit. */
+  TooLarge,
+
+  /** Neither UTF-8 text nor an image type the gateway serves. */
+  Unsupported,
+
+  /** The request was sent but no answer came back in time. */
+  Timeout,
+
+  /** The request never reached the gateway or the connection dropped. */
+  Network,
+
+  Other,
+}
+
+internal fun workspacePreviewFailure(err: Throwable): WorkspacePreviewFailure =
+  when (err) {
+    is GatewayRequestRejected -> {
+      // agents.workspace.get reports these as INVALID_REQUEST; the message carries the reason.
+      val message = err.gatewayError.message
+      when {
+        "too large" in message -> WorkspacePreviewFailure.TooLarge
+        "supported image" in message || "UTF-8" in message -> WorkspacePreviewFailure.Unsupported
+        else -> WorkspacePreviewFailure.Other
+      }
+    }
+
+    is GatewayRequestOutcomeUnknown -> {
+      if ("timeout" in err.message.orEmpty()) WorkspacePreviewFailure.Timeout else WorkspacePreviewFailure.Network
+    }
+
+    is GatewayRequestDefinitiveFailure, is java.io.IOException -> {
+      WorkspacePreviewFailure.Network
+    }
+
+    else -> {
+      WorkspacePreviewFailure.Other
+    }
+  }
+
+private fun workspacePreviewFailureText(failure: WorkspacePreviewFailure): String =
+  when (failure) {
+    WorkspacePreviewFailure.TooLarge -> nativeString("This file is too large to preview.")
+    WorkspacePreviewFailure.Unsupported -> nativeString("This file is not text or a supported image.")
+    WorkspacePreviewFailure.Timeout -> nativeString("Gateway connection timed out. Check your network and that the Gateway is running, then retry.")
+    WorkspacePreviewFailure.Network -> nativeString("Could not reach the Gateway. Check your network and that the Gateway is running, then retry.")
+    WorkspacePreviewFailure.Other -> nativeString("This file cannot be previewed. It may be binary or too large.")
+  }
+
 @Composable
 private fun WorkspaceDirectoryScreen(
   viewModel: MainViewModel,
+  agentId: String,
+  agentOptions: List<GatewayAgentSummary>,
+  onSelectAgent: (String) -> Unit,
   path: String,
   onBack: () -> Unit,
   onOpenDirectory: (String) -> Unit,
@@ -142,7 +243,7 @@ private fun WorkspaceDirectoryScreen(
     loading = true
     errorText = null
     try {
-      val listing = viewModel.listWorkspaceFiles(path = path.ifEmpty { null })
+      val listing = viewModel.listWorkspaceFiles(path = path.ifEmpty { null }, agentId = agentId)
       entries = listing.entries
       totalEntries = listing.totalEntries
     } catch (_: Throwable) {
@@ -203,6 +304,20 @@ private fun WorkspaceDirectoryScreen(
         }
       }
 
+      // Only at the workspace root: switching agents resets the folder path anyway.
+      if (path.isEmpty() && agentOptions.size > 1) {
+        item {
+          ClawSegmentedControl(
+            options = agentOptions,
+            selected = agentOptions.first { it.id == agentId },
+            onSelect = { onSelectAgent(it.id) },
+            modifier = Modifier.fillMaxWidth(),
+            maxOptionsPerRow = 3,
+            optionLabel = ::workspaceAgentLabel,
+          )
+        }
+      }
+
       errorText?.let { message ->
         item {
           ClawEmptyState(title = nativeString("Files unavailable"), body = message)
@@ -237,7 +352,7 @@ private fun WorkspaceDirectoryScreen(
                   loadingMore = true
                   scope.launch {
                     try {
-                      val listing = viewModel.listWorkspaceFiles(path = path.ifEmpty { null }, offset = entries.size)
+                      val listing = viewModel.listWorkspaceFiles(path = path.ifEmpty { null }, offset = entries.size, agentId = agentId)
                       val known = entries.map { it.path }.toSet()
                       entries = entries + listing.entries.filter { it.path !in known }
                       totalEntries = listing.totalEntries
@@ -316,6 +431,7 @@ private fun workspaceEntryDetail(
 @Composable
 private fun WorkspaceFilePreview(
   viewModel: MainViewModel,
+  agentId: String,
   path: String,
   onBack: () -> Unit,
 ) {
@@ -328,9 +444,12 @@ private fun WorkspaceFilePreview(
     loading = true
     errorText = null
     try {
-      file = viewModel.fetchWorkspaceFile(path)
-    } catch (_: Throwable) {
-      errorText = nativeString("This file cannot be previewed. It may be binary or too large.")
+      file = viewModel.fetchWorkspaceFile(path, agentId)
+    } catch (err: CancellationException) {
+      throw err
+    } catch (err: Throwable) {
+      Log.w("OpenClawWorkspace", "workspace preview failed for $path", err)
+      errorText = workspacePreviewFailureText(workspacePreviewFailure(err))
     } finally {
       loading = false
     }
@@ -385,8 +504,12 @@ private fun WorkspaceFilePreview(
 @Composable
 private fun WorkspaceFileContent(file: GatewayWorkspaceFile) {
   if (file.isBase64 && file.mimeType.startsWith("image/")) {
-    val imageState = rememberBase64ImageState(file.content)
+    val imageState = rememberBase64ImageState(file.content, Base64ImageSource.Workspace)
     when {
+      imageState.tooLarge -> {
+        ClawEmptyState(title = nativeString("No preview"), body = nativeString("This file is too large to preview."))
+      }
+
       imageState.image != null -> {
         Image(
           bitmap = imageState.image,

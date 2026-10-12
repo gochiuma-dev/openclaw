@@ -282,6 +282,65 @@ class NodeForegroundServiceTest {
   }
 
   @Test
+  fun voiceCaptureOffFromBackgroundDoesNotWakeStoppedService() {
+    val app = RuntimeEnvironment.getApplication() as NodeApp
+    val background = BackgroundRestrictedContext(app)
+    NodeForegroundService.resume(app, startNow = false)
+
+    // Activity.onStop → NodeRuntime.setForeground(false) → stopActiveVoiceSession with no live service.
+    NodeForegroundService.setVoiceCaptureMode(background, VoiceCaptureMode.Off)
+
+    assertEquals(0, background.startAttempts.get())
+    assertNull(Shadows.shadowOf(app).nextStartedService)
+  }
+
+  @Test
+  fun refusedBackgroundStartForMicrophoneModeIsLoggedNotThrown() {
+    val app = RuntimeEnvironment.getApplication() as NodeApp
+    val background = BackgroundRestrictedContext(app)
+    NodeForegroundService.resume(app, startNow = false)
+
+    NodeForegroundService.setVoiceCaptureMode(background, VoiceCaptureMode.ManualMic)
+    NodeForegroundService.setVoiceCaptureMode(background, VoiceCaptureMode.TalkMode)
+    NodeForegroundService.start(background)
+
+    assertEquals(3, background.startAttempts.get())
+  }
+
+  @Test
+  fun runningServiceTakesVoiceCaptureModeWithoutAnIntent() {
+    val app = RuntimeEnvironment.getApplication() as NodeApp
+    val background = BackgroundRestrictedContext(app)
+    NodeForegroundService.resume(app, startNow = false)
+    val controller = Robolectric.buildService(NodeForegroundService::class.java).create()
+
+    try {
+      NodeForegroundService.setVoiceCaptureMode(background, VoiceCaptureMode.ManualMic)
+      assertEquals(VoiceCaptureMode.ManualMic, ReflectionHelpers.getField(controller.get(), "voiceCaptureMode"))
+      assertEquals(
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+        ReflectionHelpers.getField<Int>(Shadows.shadowOf(controller.get()), "foregroundServiceType"),
+      )
+
+      // Off from a worker thread lands on the main thread, still without startService.
+      val worker = Thread { NodeForegroundService.setVoiceCaptureMode(background, VoiceCaptureMode.Off) }
+      worker.start()
+      worker.join()
+      Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+      assertEquals(VoiceCaptureMode.Off, ReflectionHelpers.getField(controller.get(), "voiceCaptureMode"))
+      assertEquals(ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE, ReflectionHelpers.getField<Int>(Shadows.shadowOf(controller.get()), "foregroundServiceType"))
+      assertEquals(0, background.startAttempts.get())
+    } finally {
+      closeNodeServiceTestFixture(controller, app)
+    }
+
+    // A destroyed service no longer receives direct updates.
+    NodeForegroundService.setVoiceCaptureMode(background, VoiceCaptureMode.Off)
+    assertEquals(0, background.startAttempts.get())
+  }
+
+  @Test
   fun explicitResumeAfterStopRestoresStickyServiceOwnership() {
     val app = RuntimeEnvironment.getApplication() as NodeApp
     val controller = Robolectric.buildService(NodeForegroundService::class.java).create()
@@ -2789,4 +2848,23 @@ class NodeForegroundServiceTest {
         }
       start(InetAddress.getByName("127.0.0.1"), 0)
     }
+}
+
+/** Behaves like an app whose process is in the background: Android refuses every service start. */
+private class BackgroundRestrictedContext(
+  private val app: NodeApp,
+) : android.content.ContextWrapper(app) {
+  val startAttempts = AtomicInteger()
+
+  override fun getApplicationContext(): Context = app
+
+  override fun startService(service: Intent?): android.content.ComponentName? {
+    startAttempts.incrementAndGet()
+    throw android.app.BackgroundServiceStartNotAllowedException("app is in background")
+  }
+
+  override fun startForegroundService(service: Intent?): android.content.ComponentName? {
+    startAttempts.incrementAndGet()
+    throw android.app.ForegroundServiceStartNotAllowedException("app is in background")
+  }
 }

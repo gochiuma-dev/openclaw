@@ -60,6 +60,37 @@ class ChatImageCodecTest {
   }
 
   @Test
+  fun workspacePngPreviewAcceptsGatewaySizedImagesAndDownsamples() {
+    // Noise does not compress: a ~2.5 MB PNG, far past the chat inline limit but inside the gateway's 5 MB.
+    val random = java.util.Random(7)
+    val noisy = Bitmap.createBitmap(800, 800, Bitmap.Config.ARGB_8888)
+    for (y in 0 until 800) for (x in 0 until 800) noisy.setPixel(x, y, random.nextInt() or 0xFF000000.toInt())
+    val noisyPng = pngBase64(noisy)
+    assertTrue(noisyPng.length > CHAT_IMAGE_MAX_BASE64_CHARS)
+    assertTrue(decodedBase64ByteCount(noisyPng) < WORKSPACE_PREVIEW_MAX_IMAGE_BYTES)
+    assertNull(decodeBase64Bitmap(noisyPng))
+    val preview = requireNotNull(decodeBase64Bitmap(noisyPng, source = Base64ImageSource.Workspace))
+    assertEquals(800, preview.width)
+
+    // A large canvas is sampled down to the preview edge instead of allocating the full bitmap.
+    val wide = Bitmap.createBitmap(3200, 1800, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.BLUE) }
+    val scaled = requireNotNull(decodeBase64Bitmap(pngBase64(wide), source = Base64ImageSource.Workspace))
+    assertEquals(1600, scaled.width)
+    assertEquals(900, scaled.height)
+
+    // Anything the gateway would not have sent is refused before decoding.
+    val limit = Base64ImageSource.Workspace.maxBase64Chars
+    assertTrue(limit >= ((WORKSPACE_PREVIEW_MAX_IMAGE_BYTES + 2) / 3) * 4)
+    assertNull(decodeBase64Bitmap("A".repeat(limit.toInt() + 1), source = Base64ImageSource.Workspace))
+  }
+
+  private fun pngBase64(bitmap: Bitmap): String {
+    val out = ByteArrayOutputStream()
+    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+    return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+  }
+
+  @Test
   fun computeInSampleSizeCapsLongestEdge() {
     assertEquals(4, computeInSampleSize(width = 4032, height = 3024, maxDimension = 1600))
     assertEquals(1, computeInSampleSize(width = 800, height = 600, maxDimension = 1600))

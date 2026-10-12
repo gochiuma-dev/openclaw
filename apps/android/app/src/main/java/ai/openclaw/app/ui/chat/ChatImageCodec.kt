@@ -211,7 +211,12 @@ internal enum class Base64ImageSource(
 ) {
   Inline(CHAT_IMAGE_MAX_BASE64_CHARS.toLong()),
   Composer(((CHAT_COMPOSER_MAX_IMAGE_DECODED_BYTES + 2) / 3) * 4),
+
+  /** agents.workspace.get serves images up to the gateway's 5 MB MAX_IMAGE_BYTES. */
+  Workspace(((WORKSPACE_PREVIEW_MAX_IMAGE_BYTES + 2) / 3) * 4),
 }
+
+internal const val WORKSPACE_PREVIEW_MAX_IMAGE_BYTES = 5L * 1024L * 1024L
 
 /** Decodes chat image payloads into display-sized bitmaps with an LRU cache. */
 internal fun decodeBase64Bitmap(
