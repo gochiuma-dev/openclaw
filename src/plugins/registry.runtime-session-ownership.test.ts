@@ -127,6 +127,9 @@ describe("plugin registry runtime session ownership", () => {
       legacy: "agent:main:harness:notes",
       plugin: "agent:main:plugin-owned",
       mixed: "agent:main:harness:codex:mixed-owner",
+      // A row whose sessionId holds a session *key* instead of a filename-safe id.
+      // Real stores grow these; one such row used to fail every unrelated run.
+      malformed: "agent:main:voice:1001",
     };
     const lock = { agentHarnessId: "codex", modelSelectionLocked: true as const };
     const reserved = {
@@ -162,6 +165,7 @@ describe("plugin registry runtime session ownership", () => {
       [key.ordinary]: ordinary,
       [key.locked]: locked,
       [key.legacy]: legacy,
+      [key.malformed]: { sessionId: key.malformed, updatedAt: 1 },
     } as unknown as Record<string, SessionEntry>;
     const subagent = {
       complete: vi.fn(async () => ({ text: "completed" })),

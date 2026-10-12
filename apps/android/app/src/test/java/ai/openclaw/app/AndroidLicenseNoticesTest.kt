@@ -40,6 +40,7 @@ class AndroidLicenseNoticesTest {
         "AndroidSVG",
         "AndroidX CameraX",
         "AndroidX Compose",
+        "AndroidX Health Connect",
         "AndroidX Media3",
         "AndroidX Room",
         "AndroidX SQLite",

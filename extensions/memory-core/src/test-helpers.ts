@@ -34,7 +34,10 @@ import {
 import { applyShortTermPromotions } from "./short-term-promotion-apply.js";
 import { readPhaseSignalStore, readShortTermStore } from "./short-term-promotion-store.js";
 import type { ShortTermLockEntry } from "./short-term-promotion-types.js";
-import { normalizeShortTermRecallStore } from "./short-term-promotion-utils.js";
+import {
+  normalizeShortTermRecallStore,
+  SHORT_TERM_RECALL_MAX_ENTRIES,
+} from "./short-term-promotion-utils.js";
 
 const MEMORY_CORE_PLUGIN_ID = "memory-core";
 const MEMORY_CORE_TEST_AGENT_ID = "memory-core-test";
@@ -129,7 +132,7 @@ async function writeRawShortTermStore(params: {
 }
 
 export const shortTermTestState = {
-  SHORT_TERM_RECALL_MAX_ENTRIES: 512,
+  SHORT_TERM_RECALL_MAX_ENTRIES,
   SHORT_TERM_RECALL_MAX_SNIPPET_CHARS: 800,
   async readRecallStore(workspaceDir: string, nowIso: string) {
     return normalizeShortTermRecallStore(

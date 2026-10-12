@@ -1070,6 +1070,10 @@ class GatewaySession(
     // A null socket is not a completed transport while OkHttp's factory still owns its return.
     private var socketCreationPending = false
     private var transportFinished = false
+
+    // Whether this upgrade carried operator headers. Diagnostics only; the values never leave
+    // the request builder, so an edge rejection can be explained without quoting a secret.
+    @Volatile private var sentCustomHeaders = false
     private val loggerTag = "OpenClawGateway"
     private val incomingMessages = Channel<String>(Channel.UNLIMITED)
     private var lastEventSequence: Long? = null
@@ -1106,6 +1110,10 @@ class GatewaySession(
               tls = target.tls,
               customHeadersProvider = customHeadersProvider,
             )
+          // Operator headers are the only fields that builder sets, so the count is the diagnostic
+          // signal an edge rejection needs. Names and values stay out of the failure path.
+          // Recorded before the socket exists so an immediate failure still reports it.
+          sentCustomHeaders = original.headers.size > 0
           val request =
             if (ingressAuthorization == null) {
               original
@@ -1627,7 +1635,12 @@ class GatewaySession(
       ) {
         val error = response?.let { ingressAuthorization?.rejection(it) } ?: t
         finishTransport(
-          message = "Gateway error: ${error.message ?: error::class.java.simpleName}",
+          message =
+            gatewayTransportFailureMessage(
+              error = error,
+              responseCode = response?.code,
+              sentCustomHeaders = sentCustomHeaders,
+            ),
           connectError = error,
         )
       }
@@ -2668,7 +2681,11 @@ internal fun buildGatewayWebSocketUrl(
   return "$scheme://${formatGatewayAuthority(host, port)}$path"
 }
 
-/** Builds one gateway upgrade request without exposing proxy credentials to cleartext routes. */
+/**
+ * Builds one gateway upgrade request without exposing proxy credentials to cleartext routes.
+ * Operator headers are the only fields set here; [GatewaySession] reads the resulting header
+ * count to tell whether a rejected upgrade had edge credentials attached.
+ */
 internal fun buildGatewayWebSocketUpgradeRequest(
   endpoint: GatewayEndpoint,
   tls: GatewayTlsParams?,

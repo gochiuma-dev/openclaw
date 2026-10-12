@@ -467,6 +467,10 @@ fun OnboardingFlow(
     var manualTls by rememberSaveable { mutableStateOf(false) }
     var token by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
+    // Edge-proxy headers are shared by both pairing paths: a setup code for a gateway behind
+    // Cloudflare Access still has to get through the edge before the code can be redeemed.
+    // Plain remember, not rememberSaveable, so typed service tokens never enter saved state.
+    var headerEditor by remember { mutableStateOf(GatewayHeaderEditorState()) }
     var setupErrorCode by rememberSaveable(stateSaver = OnboardingErrorCodeSaver) { mutableStateOf(OnboardingErrorCode.None) }
     var setupScanErrorCode by rememberSaveable(stateSaver = OnboardingErrorCodeSaver) { mutableStateOf(OnboardingErrorCode.None) }
     var attemptedGatewayName by rememberSaveable { mutableStateOf<String?>(null) }
@@ -656,6 +660,7 @@ fun OnboardingFlow(
       attemptedGatewayName = attemptedName
       lastGatewayInputSource = inputSource
       viewModel.saveGatewayConfigAndConnect(plan)
+      headerEditor = headerEditor.committed()
       step = OnboardingStep.Recovery
     }
 
@@ -722,6 +727,7 @@ fun OnboardingFlow(
           bootstrapTokenInput = "",
           tokenInput = token,
           passwordInput = password,
+          customHeaderDrafts = headerEditor.drafts(),
         )
       if (plan == null) {
         val endpointError =
@@ -785,6 +791,7 @@ fun OnboardingFlow(
           bootstrapTokenInput = "",
           tokenInput = token,
           passwordInput = password,
+          customHeaderDrafts = headerEditor.drafts(),
         )
       if (plan == null) {
         val endpointError =
@@ -938,6 +945,8 @@ fun OnboardingFlow(
         SetupCodeEntryScreen(
           modifier = modifier,
           setupCode = setupCode,
+          headerEditor = headerEditor,
+          onHeaderEditorChange = { headerEditor = it },
           error = setupErrorCode.nativeTextOrNull()?.resolveNativeTextResource(),
           mascotMood = onboardingMascotMood(step = step, setupErrorCode = setupErrorCode),
           onBack = ::goBack,
@@ -957,6 +966,8 @@ fun OnboardingFlow(
           manualTls = manualTls,
           token = token,
           password = password,
+          headerEditor = headerEditor,
+          onHeaderEditorChange = { headerEditor = it },
           error = setupErrorCode.nativeTextOrNull()?.resolveNativeTextResource(),
           mascotMood = onboardingMascotMood(step = step, setupErrorCode = setupErrorCode),
           onBack = ::goBack,
@@ -1739,6 +1750,8 @@ private fun analyzeSetupQrFrame(
 @Composable
 private fun SetupCodeEntryScreen(
   setupCode: String,
+  headerEditor: GatewayHeaderEditorState,
+  onHeaderEditorChange: (GatewayHeaderEditorState) -> Unit,
   error: String?,
   mascotMood: MascotMood,
   onBack: () -> Unit,
@@ -1748,7 +1761,10 @@ private fun SetupCodeEntryScreen(
 ) {
   ClawScaffold(modifier = modifier, contentPadding = onboardingContentPadding()) {
     Column(modifier = Modifier.fillMaxSize().imePadding(), verticalArrangement = Arrangement.SpaceBetween) {
-      Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+      Column(
+        modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+      ) {
         OnboardingHeader(title = nativeText("Enter setup code"), onBack = onBack)
         if (error != null) {
           Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -1763,6 +1779,12 @@ private fun SetupCodeEntryScreen(
             secret = true,
           )
         }
+        // A setup code for a gateway behind an identity-aware proxy cannot be redeemed until
+        // the upgrade carries the edge credential, so the headers belong on this screen too.
+        GatewayAdvancedHeadersSection(
+          state = headerEditor,
+          onStateChange = onHeaderEditorChange,
+        )
         error?.let { message ->
           InlineError(title = nativeString("Setup code was not accepted"), body = message)
         }
@@ -1781,6 +1803,8 @@ private fun ManualGatewaySetupScreen(
   manualTls: Boolean,
   token: String,
   password: String,
+  headerEditor: GatewayHeaderEditorState,
+  onHeaderEditorChange: (GatewayHeaderEditorState) -> Unit,
   error: String?,
   mascotMood: MascotMood,
   onBack: () -> Unit,
@@ -1891,6 +1915,12 @@ private fun ManualGatewaySetupScreen(
               )
             }
           }
+        }
+        item {
+          GatewayAdvancedHeadersSection(
+            state = headerEditor,
+            onStateChange = onHeaderEditorChange,
+          )
         }
         error?.let { message ->
           item {

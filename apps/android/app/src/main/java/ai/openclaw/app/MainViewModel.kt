@@ -24,6 +24,7 @@ import ai.openclaw.app.chat.SessionForkResult
 import ai.openclaw.app.chat.SessionRewindResult
 import ai.openclaw.app.chat.defaultChatThinkingLevelSelection
 import ai.openclaw.app.chat.resolveChatComposerOwner
+import ai.openclaw.app.gateway.GatewayCustomHeaders
 import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.GatewayMediaKind
 import ai.openclaw.app.gateway.GatewayRegistryEntry
@@ -640,6 +641,7 @@ class MainViewModel private constructor(
 
   val onboardingCompleted: StateFlow<Boolean> = prefs.onboardingCompleted
   val installedAppsSharingEnabled: StateFlow<Boolean> = prefs.installedAppsSharingEnabled
+  val healthSummaryEnabled: StateFlow<Boolean> = prefs.healthSummaryEnabled
   val accessibilityControlEnabled: StateFlow<Boolean> = prefs.accessibilityControlEnabled
   val speakerEnabled: StateFlow<Boolean> = prefs.speakerEnabled
   val preferredAudioInputDevice: StateFlow<String?> = prefs.preferredAudioInputDevice
@@ -778,6 +780,13 @@ class MainViewModel private constructor(
     prefs.setPreventSleep(value)
   }
 
+  /**
+   * Names of the edge-proxy headers stored for one gateway. Only the names cross into the UI:
+   * the values are credentials, and the editor is built so it never needs to read one back.
+   */
+  internal suspend fun gatewayCustomHeaderNames(stableId: String): List<String> =
+    withContext(Dispatchers.IO) { prefs.loadGatewayCustomHeaders(stableId).keys.toList() }
+
   /** Auth replacement retires the old gateway identity, including every retained composer owner. */
   internal suspend fun clearChatComposerGateway(stableId: String) {
     val gateway = stableId.trim()
@@ -889,6 +898,19 @@ class MainViewModel private constructor(
             password = config.password,
           )
         }
+
+        // Edge headers are keyed by the resolved endpoint, so they are written only once the
+        // stable id above is final. Merging keeps a blank field meaning "keep the stored value".
+        if (config.customHeaders.isNotEmpty()) {
+          prefs.saveGatewayCustomHeaders(
+            stableId = endpoint.stableId,
+            headers =
+              GatewayCustomHeaders.merged(
+                stored = prefs.loadGatewayCustomHeaders(endpoint.stableId),
+                drafts = config.customHeaders,
+              ),
+          )
+        }
         prefs.gatewayRegistry.upsert(
           GatewayRegistryEntry(
             stableId = endpoint.stableId,
@@ -942,6 +964,10 @@ class MainViewModel private constructor(
 
   fun revokeInstalledAppsDisclosureConsent() {
     ensureRuntime().revokeInstalledAppsDisclosureConsent()
+  }
+
+  fun setHealthSummaryEnabled(value: Boolean) {
+    ensureRuntime().setHealthSummaryEnabled(value)
   }
 
   fun setAccessibilityControlEnabled(value: Boolean) {
@@ -1843,9 +1869,13 @@ class MainViewModel private constructor(
   suspend fun listWorkspaceFiles(
     path: String?,
     offset: Int? = null,
-  ): GatewayWorkspaceListing = ensureRuntime().listWorkspaceFiles(path = path, offset = offset)
+    agentId: String? = null,
+  ): GatewayWorkspaceListing = ensureRuntime().listWorkspaceFiles(path = path, offset = offset, agentId = agentId)
 
-  suspend fun fetchWorkspaceFile(path: String): GatewayWorkspaceFile = ensureRuntime().fetchWorkspaceFile(path)
+  suspend fun fetchWorkspaceFile(
+    path: String,
+    agentId: String? = null,
+  ): GatewayWorkspaceFile = ensureRuntime().fetchWorkspaceFile(path, agentId)
 
   fun setChatThinkingLevel(level: String) {
     ensureRuntime().chat.setThinkingLevel(level)

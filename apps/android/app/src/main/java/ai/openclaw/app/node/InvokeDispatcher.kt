@@ -7,6 +7,7 @@ import ai.openclaw.app.protocol.OpenClawCameraCommand
 import ai.openclaw.app.protocol.OpenClawCapability
 import ai.openclaw.app.protocol.OpenClawContactsCommand
 import ai.openclaw.app.protocol.OpenClawDeviceCommand
+import ai.openclaw.app.protocol.OpenClawHealthCommand
 import ai.openclaw.app.protocol.OpenClawLocationCommand
 import ai.openclaw.app.protocol.OpenClawMobileUiCommand
 import ai.openclaw.app.protocol.OpenClawMotionCommand
@@ -32,6 +33,7 @@ class InvokeDispatcher(
   debugHandler: DebugHandler,
   callLogHandler: CallLogHandler,
   mobileUiHandler: MobileUiHandler,
+  healthHandler: HealthHandler,
   private val isForeground: () -> Boolean,
   cameraEnabled: () -> Boolean,
   locationEnabled: () -> Boolean,
@@ -45,6 +47,7 @@ class InvokeDispatcher(
   motionActivityAvailable: () -> Boolean,
   motionPedometerAvailable: () -> Boolean,
   mobileUiAvailable: () -> Boolean,
+  healthSummaryAvailable: () -> Boolean,
   private val voiceWakeAvailable: () -> Boolean,
 ) {
   private class CommandGate(
@@ -87,6 +90,8 @@ class InvokeDispatcher(
     CommandGate(debugBuild, nodeInvokeError("INVALID_REQUEST", "unknown command"))
   private val mobileUiGate =
     CommandGate(mobileUiAvailable, nodeInvokeError("MOBILE_UI_UNAVAILABLE", "accessibility service is not connected"))
+  private val healthGate =
+    CommandGate(healthSummaryAvailable, nodeInvokeError("HEALTH_ACCESS_DISABLED", "enable Health Connect in Settings"))
 
   // Keep protocol ordering stable. The same entries advertise and dispatch each bound handler.
   private val commands =
@@ -117,6 +122,7 @@ class InvokeDispatcher(
       Command(OpenClawSmsCommand.Send.rawValue, smsHandler::handleSmsSend, smsSendGate),
       Command(OpenClawSmsCommand.Search.rawValue, smsHandler::handleSmsSearch, smsSearchGate),
       Command(OpenClawCallLogCommand.Search.rawValue, callLogHandler::handleCallLogSearch, callLogGate),
+      Command(OpenClawHealthCommand.Summary.rawValue, healthHandler::handleHealthSummary, healthGate),
       Command(OpenClawMobileUiCommand.Observe.rawValue, mobileUiHandler::handleObserve, mobileUiGate),
       Command(OpenClawMobileUiCommand.Act.rawValue, mobileUiHandler::handleAct, mobileUiGate),
       Command("debug.logs", { debugHandler.handleLogs() }, debugGate),
@@ -164,6 +170,7 @@ class InvokeDispatcher(
       if (callLogGate.isAvailable()) add(OpenClawCapability.CallLog.rawValue)
       if (voiceWakeAvailable()) add(OpenClawCapability.VoiceWake.rawValue)
       if (mobileUiGate.isAvailable()) add(OpenClawCapability.MobileUI.rawValue)
+      if (healthGate.isAvailable()) add(OpenClawCapability.Health.rawValue)
     }
 }
 
