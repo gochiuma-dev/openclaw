@@ -73,6 +73,7 @@ import ai.openclaw.app.node.ContactsHandler
 import ai.openclaw.app.node.DebugHandler
 import ai.openclaw.app.node.DeviceHandler
 import ai.openclaw.app.node.DeviceNotificationListenerService
+import ai.openclaw.app.node.HealthHandler
 import ai.openclaw.app.node.InvokeDispatcher
 import ai.openclaw.app.node.LocationCaptureManager
 import ai.openclaw.app.node.LocationHandler
@@ -104,6 +105,7 @@ import ai.openclaw.app.voice.PreviewVoiceWakeRecognizer
 import ai.openclaw.app.voice.SystemSpeechSpeaker
 import ai.openclaw.app.voice.TalkAudioPlayer
 import ai.openclaw.app.voice.TalkFailureNotice
+import ai.openclaw.app.voice.TalkModeGatewayConfigParser
 import ai.openclaw.app.voice.TalkModeManager
 import ai.openclaw.app.voice.TalkPttOnceStart
 import ai.openclaw.app.voice.TalkPttStopPayload
@@ -906,6 +908,8 @@ class NodeRuntime internal constructor(
     val connectAuth: ((nonce: String, signedAt: Long) -> JsonObject)? = null,
     val browserFocusAvailable: Boolean = false,
     val legacyAuth: (() -> JsonObject)? = null,
+    /** Operator edge-proxy headers, read at load time; the WebView sends them only to [baseUrl]'s HTTPS origin. */
+    val edgeHeaders: (() -> Map<String, String>)? = null,
   )
 
   private val appContext = context.applicationContext
@@ -997,6 +1001,11 @@ class NodeRuntime internal constructor(
   private val motionHandler = MotionHandler(appContext = appContext)
 
   private val mobileUiHandler = MobileUiHandler()
+
+  private val healthHandler: HealthHandler =
+    HealthHandler(
+      appContext = appContext,
+    )
   private var lastMobileUiConnected = mobileUiHandler.isConnected.value
 
   private val invokeDispatcher: InvokeDispatcher =
@@ -1044,6 +1053,7 @@ class NodeRuntime internal constructor(
 
           override suspend fun handlePttOnce(paramsJson: String?): GatewaySession.InvokeResult = handleTalkPttOnce()
         },
+      healthHandler = healthHandler,
       isForeground = { _isForeground.value },
       cameraEnabled = { cameraEnabled.value },
       locationEnabled = { locationMode.value != LocationMode.Off },
@@ -1059,6 +1069,8 @@ class NodeRuntime internal constructor(
       mobileUiAvailable = {
         SensitiveFeatureConfig.accessibilityControlEnabled && mobileUiHandler.isConnected.value
       },
+      // Advertised only after the user opts in, like iOS Apple Health summaries.
+      healthSummaryAvailable = { healthSummaryEnabled.value && healthHandler.isAvailable() },
       voiceWakeAvailable = ::isVoiceWakeCapabilityEnabled,
     )
 
@@ -2812,6 +2824,7 @@ class NodeRuntime internal constructor(
   val activeGatewayStableId: StateFlow<String?> = prefs.gatewayRegistry.activeStableId
   val connectedGatewayStableIds: StateFlow<List<String>> = prefs.gatewayRegistry.connectedStableIds
   val installedAppsSharingEnabled: StateFlow<Boolean> = prefs.installedAppsSharingEnabled
+  val healthSummaryEnabled: StateFlow<Boolean> = prefs.healthSummaryEnabled
 
   private var didAutoConnect = false
 
@@ -3430,6 +3443,12 @@ class NodeRuntime internal constructor(
   fun revokeInstalledAppsDisclosureConsent() {
     if (!prefs.installedAppsSharingEnabled.value) return
     prefs.revokeInstalledAppsDisclosureConsent()
+    refreshAcceptedGatewayConnection(refreshOperator = false)
+  }
+
+  fun setHealthSummaryEnabled(value: Boolean) {
+    if (prefs.healthSummaryEnabled.value == value) return
+    prefs.setHealthSummaryEnabled(value)
     refreshAcceptedGatewayConnection(refreshOperator = false)
   }
 
@@ -4740,6 +4759,8 @@ class NodeRuntime internal constructor(
             }
           }
         },
+        // Same store the WebSocket upgrade reads, so an edge proxy (Cloudflare Access) admits the page too.
+        edgeHeaders = { prefs.loadGatewayCustomHeaders(endpoint.stableId) },
       )
     _gatewayControlPage.value = page
   }
@@ -6354,14 +6375,15 @@ class NodeRuntime internal constructor(
     return snapshot
   }
 
-  /** Lists one directory of the active agent's workspace (read-only RPC). */
+  /** Lists one directory of [agentId]'s workspace, or the active agent's (read-only RPC). */
   suspend fun listWorkspaceFiles(
     path: String?,
     offset: Int? = null,
+    agentId: String? = null,
   ): GatewayWorkspaceListing {
     val params =
       buildJsonObject {
-        put("agentId", JsonPrimitive(workspaceAgentId()))
+        put("agentId", JsonPrimitive(agentId?.trim()?.ifEmpty { null } ?: workspaceAgentId()))
         if (!path.isNullOrEmpty()) put("path", JsonPrimitive(path))
         if (offset != null && offset > 0) put("offset", JsonPrimitive(offset))
       }
@@ -6371,10 +6393,13 @@ class NodeRuntime internal constructor(
   }
 
   /** Fetches one workspace file preview (UTF-8 text or base64 image). */
-  suspend fun fetchWorkspaceFile(path: String): GatewayWorkspaceFile {
+  suspend fun fetchWorkspaceFile(
+    path: String,
+    agentId: String? = null,
+  ): GatewayWorkspaceFile {
     val params =
       buildJsonObject {
-        put("agentId", JsonPrimitive(workspaceAgentId()))
+        put("agentId", JsonPrimitive(agentId?.trim()?.ifEmpty { null } ?: workspaceAgentId()))
         put("path", JsonPrimitive(path))
       }
     val res = operatorSession.request("agents.workspace.get", params.toString(), timeoutMs = 30_000)
@@ -6498,9 +6523,26 @@ class NodeRuntime internal constructor(
       _talkSetupReadiness.value = GatewayTalkSetupReadiness.unverified()
       return
     }
+    // The catalog reports which providers exist; only talk.config says which mode the
+    // Gateway will actually run. Talk startup needs both, or it blocks on realtime setup
+    // that an stt-tts Gateway never uses.
+    val relaySelected =
+      try {
+        val response = requestGatewayData(gatewayScope, "talk.config", "{}")
+        val config =
+          json
+            .parseToJsonElement(response)
+            .asObjectOrNull()
+            ?.get("config")
+            .asObjectOrNull()
+        TalkModeGatewayConfigParser.parse(config).realtimeRelayEligible
+      } catch (_: Throwable) {
+        true
+      }
     val readiness =
       try {
         parseGatewayTalkSetupReadiness(requestGatewayObject(gatewayScope, "talk.catalog", "{}"))
+          .copy(realtimeRelaySelected = relaySelected)
       } catch (_: Throwable) {
         GatewayTalkSetupReadiness.unverified(GatewayTalkSetupIssue.CatalogLoadFailed)
       }

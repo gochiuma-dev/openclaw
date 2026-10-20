@@ -41,6 +41,7 @@ internal fun resolveChatRealtimeTalkLaunch(
 internal fun rememberChatRealtimeTalkLauncher(viewModel: MainViewModel): () -> Unit {
   val context = LocalContext.current
   val talkSetupReadiness by viewModel.talkSetupReadiness.collectAsState()
+  val currentReadiness by rememberUpdatedState(talkSetupReadiness)
   val currentTalkSetup by rememberUpdatedState(talkSetupReadiness.realtimeTalk)
   val failureNotice by viewModel.talkFailureNotice.collectAsState()
   val setupMessage by viewModel.pendingTalkSetupMessage.collectAsState()
@@ -69,7 +70,7 @@ internal fun rememberChatRealtimeTalkLauncher(viewModel: MainViewModel): () -> U
   val requestMicPermission =
     rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
       if (!granted) return@rememberLauncherForActivityResult
-      if (currentTalkSetup.requiresSetup) {
+      if (currentReadiness.talkStartRequiresSetup) {
         showSetupMessage()
       } else {
         viewModel.setTalkModeEnabled(true)
@@ -80,7 +81,7 @@ internal fun rememberChatRealtimeTalkLauncher(viewModel: MainViewModel): () -> U
     when (
       resolveChatRealtimeTalkLaunch(
         hasMicPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
-        requiresSetup = talkSetupReadiness.realtimeTalk.requiresSetup,
+        requiresSetup = talkSetupReadiness.talkStartRequiresSetup,
       )
     ) {
       ChatRealtimeTalkLaunch.RequestPermission -> requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)

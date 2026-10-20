@@ -5,6 +5,7 @@ import ai.openclaw.app.gateway.testDeviceIdentityStore
 import ai.openclaw.app.protocol.OpenClawCallLogCommand
 import ai.openclaw.app.protocol.OpenClawCameraCommand
 import ai.openclaw.app.protocol.OpenClawDeviceCommand
+import ai.openclaw.app.protocol.OpenClawHealthCommand
 import ai.openclaw.app.protocol.OpenClawLocationCommand
 import ai.openclaw.app.protocol.OpenClawMobileUiCommand
 import ai.openclaw.app.protocol.OpenClawMotionCommand
@@ -25,6 +26,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import java.time.Instant
 
 @RunWith(RobolectricTestRunner::class)
 class InvokeDispatcherTest {
@@ -114,6 +116,21 @@ class InvokeDispatcherTest {
         "INSTALLED_APPS_SHARING_DISABLED: enable Installed Apps in Settings",
         result.error?.message,
       )
+    }
+
+  @Test
+  fun healthSummaryIsAdvertisedOnlyAfterOptIn() =
+    runTest {
+      val disabled = newInvokeDispatcher(healthSummaryAvailable = false)
+      assertFalse(disabled.buildInvokeCommands().contains(OpenClawHealthCommand.Summary.rawValue))
+      assertFalse(disabled.buildCapabilities().contains("health"))
+      val result = disabled.handleInvoke(OpenClawHealthCommand.Summary.rawValue, """{"period":"today"}""")
+      assertEquals("HEALTH_ACCESS_DISABLED", result.error?.code)
+      assertEquals("HEALTH_ACCESS_DISABLED: enable Health Connect in Settings", result.error?.message)
+
+      val enabled = newInvokeDispatcher(healthSummaryAvailable = true)
+      assertTrue(enabled.buildInvokeCommands().contains(OpenClawHealthCommand.Summary.rawValue))
+      assertTrue(enabled.buildCapabilities().contains("health"))
     }
 
   @Test
@@ -307,6 +324,7 @@ class InvokeDispatcherTest {
           motionActivityAvailable = true,
           motionPedometerAvailable = true,
           mobileUiAvailable = true,
+          healthSummaryAvailable = true,
         )
 
       for (command in dispatcher.buildInvokeCommands()) {
@@ -331,6 +349,7 @@ internal fun newInvokeDispatcher(
   motionActivityAvailable: Boolean = false,
   motionPedometerAvailable: Boolean = false,
   mobileUiAvailable: Boolean = false,
+  healthSummaryAvailable: Boolean = false,
   talkHandler: TalkHandler = InvokeDispatcherFakeTalkHandler(),
   smsSearchPossible: () -> Boolean = { smsFeatureEnabled && smsTelephonyAvailable },
   voiceWakeAvailable: () -> Boolean = { false },
@@ -365,6 +384,7 @@ internal fun newInvokeDispatcher(
     debugHandler = DebugHandler(appContext, testDeviceIdentityStore(appContext)),
     callLogHandler = CallLogHandler(appContext),
     mobileUiHandler = MobileUiHandler(),
+    healthHandler = HealthHandler(appContext, InvokeDispatcherFakeHealthDataSource()),
     isForeground = isForeground,
     cameraEnabled = cameraEnabled,
     locationEnabled = { locationEnabled },
@@ -378,6 +398,7 @@ internal fun newInvokeDispatcher(
     motionActivityAvailable = { motionActivityAvailable },
     motionPedometerAvailable = { motionPedometerAvailable },
     mobileUiAvailable = { mobileUiAvailable },
+    healthSummaryAvailable = { healthSummaryAvailable },
     voiceWakeAvailable = voiceWakeAvailable,
   )
 }
@@ -465,4 +486,51 @@ private class InvokeDispatcherFakeMotionDataSource : MotionDataSource {
   override suspend fun pedometer(request: MotionRangeRequest): PedometerRecord {
     error("unused in InvokeDispatcherTest")
   }
+}
+
+private class InvokeDispatcherFakeHealthDataSource : HealthDataSource {
+  override fun availability(context: Context): HealthConnectAvailability = HealthConnectAvailability.Available
+
+  override fun extendedAccessSupport(context: Context): HealthExtendedAccess = HealthExtendedAccess(false, false)
+
+  override suspend fun grantedPermissions(context: Context): Set<String> = emptySet()
+
+  override suspend fun latestRecordTimes(
+    context: Context,
+    metrics: Set<HealthMetric>,
+    before: Instant,
+  ): Map<HealthMetric, Instant?> = emptyMap()
+
+  override suspend fun aggregate(
+    context: Context,
+    window: HealthWindow,
+    metrics: Set<HealthMetric>,
+  ): HealthAggregate = HealthAggregate()
+
+  override suspend fun sleepSessions(
+    context: Context,
+    window: HealthWindow,
+  ): List<HealthSleepSession> = emptyList()
+
+  override suspend fun exerciseSessions(
+    context: Context,
+    window: HealthWindow,
+  ): List<HealthExerciseSession> = emptyList()
+
+  override suspend fun totals(
+    context: Context,
+    window: HealthWindow,
+    metrics: Set<HealthMetric>,
+  ): HealthTotals = HealthTotals()
+
+  override suspend fun samples(
+    context: Context,
+    window: HealthWindow,
+    metric: HealthMetric,
+  ): List<HealthSample> = emptyList()
+
+  override suspend fun plannedExercises(
+    context: Context,
+    window: HealthWindow,
+  ): List<HealthPlannedExercise> = emptyList()
 }

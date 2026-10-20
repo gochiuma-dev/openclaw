@@ -70,6 +70,7 @@ const OMISSION_NOTICE = "(Some oversized messages were omitted.)";
 const SYSTEM_PROMPT = [
   "Write an Activity recap for someone scanning their tasks: what was done here, and where it stands now.",
   "Use one to three short, plain-language sentences (at most 450 characters). Lead with the concrete result or work performed; finish with whether it is done, still in progress, blocked, or waiting, only as supported by the conversation.",
+  "Write the recap in the language the user writes in (ignore English system envelopes such as 'Conversation info'), and translate a previous recap written in another language.",
   "Summarize the outcome, not the investigation log. Omit tool names, code symbols, test-command details, and lists of things that did not happen unless essential to the result or blocker.",
   "New messages are chronological continuation of the previous recap. Preserve significant prior outcomes and unresolved work unless newer evidence resolves or corrects them.",
   "Rewrite any tool jargon or investigation detail in the previous recap into a clear account of the work and its state. With no new messages, restyle only the supported facts; do not invent progress or a new state.",
