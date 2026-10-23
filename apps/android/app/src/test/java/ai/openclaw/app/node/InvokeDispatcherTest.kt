@@ -130,6 +130,8 @@ class InvokeDispatcherTest {
 
       val enabled = newInvokeDispatcher(healthSummaryAvailable = true)
       assertTrue(enabled.buildInvokeCommands().contains(OpenClawHealthCommand.Summary.rawValue))
+      assertTrue(enabled.buildInvokeCommands().contains(OpenClawHealthCommand.Samples.rawValue))
+      assertFalse(disabled.buildInvokeCommands().contains(OpenClawHealthCommand.Samples.rawValue))
       assertTrue(enabled.buildCapabilities().contains("health"))
     }
 

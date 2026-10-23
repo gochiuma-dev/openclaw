@@ -744,6 +744,173 @@ class HealthHandlerTest : NodeHandlerRobolectricTest() {
     assertNull(mergedDuration(emptyList(), window("2026-10-10T00:00:00Z", "2026-10-10T01:00:00Z")))
   }
 
+  @Test
+  fun samplesForADayReturnCompactRowsAndSleepStagesKeptOnOneDay() =
+    runTest {
+      val fitbit = "com.fitbit.FitbitMobile"
+      val fit = "com.google.android.apps.fitness"
+      val source =
+        FakeHealthDataSource(
+          detailsFor = { type, _ ->
+            when (type) {
+              HealthSampleType.HeartRate -> {
+                HealthDetailPage(
+                  listOf(
+                    HealthPointDetail(Instant.parse("2026-10-09T03:00:00Z"), 80.4, fit),
+                    // Before local midnight and at the next midnight: other days.
+                    HealthPointDetail(Instant.parse("2026-10-08T14:59:59Z"), 70.0, fitbit),
+                    HealthPointDetail(Instant.parse("2026-10-09T15:00:00Z"), 70.0, fitbit),
+                    HealthPointDetail(Instant.parse("2026-10-08T15:00:00Z"), 61.0, fitbit),
+                  ),
+                )
+              }
+
+              HealthSampleType.Sleep -> {
+                HealthDetailPage(
+                  listOf(
+                    HealthSleepDetail(
+                      Instant.parse("2026-10-08T14:00:00Z"),
+                      Instant.parse("2026-10-08T21:00:00Z"),
+                      fitbit,
+                      stages =
+                        listOf(
+                          HealthSleepStageDetail(Instant.parse("2026-10-08T16:00:00Z"), Instant.parse("2026-10-08T18:00:00Z"), "deep"),
+                          HealthSleepStageDetail(Instant.parse("2026-10-08T14:00:00Z"), Instant.parse("2026-10-08T16:00:00Z"), "light"),
+                        ),
+                    ),
+                    // Ended the morning before: belongs to 2026-10-08.
+                    HealthSleepDetail(Instant.parse("2026-10-07T14:00:00Z"), Instant.parse("2026-10-07T21:00:00Z"), fitbit),
+                  ),
+                )
+              }
+
+              HealthSampleType.Steps -> {
+                HealthDetailPage(
+                  listOf(
+                    HealthStepsDetail(Instant.parse("2026-10-09T00:00:00Z"), Instant.parse("2026-10-09T00:01:00Z"), 120, fit),
+                    HealthStepsDetail(Instant.parse("2026-10-08T14:58:00Z"), Instant.parse("2026-10-08T15:01:00Z"), 30, fit),
+                  ),
+                  truncated = true,
+                )
+              }
+
+              else -> {
+                HealthDetailPage(emptyList())
+              }
+            }
+          },
+        )
+
+      val payload = payload(HealthHandler(appContext(), source, clock).handleHealthSamples("""{"date":"2026-10-09"}"""))
+
+      assertEquals("2026-10-09", payload["date"]?.jsonPrimitive?.content)
+      assertEquals("2026-10-08T15:00:00Z", payload["startISO"]?.jsonPrimitive?.content)
+      assertEquals("2026-10-09T15:00:00Z", payload["endISO"]?.jsonPrimitive?.content)
+      assertEquals(Json.parseToJsonElement("""["$fitbit","$fit"]"""), payload["origins"])
+      assertEquals(Json.parseToJsonElement("[[1791471600,61,0],[1791514800,80,1]]"), payload["heartRate"])
+      assertEquals(Json.parseToJsonElement("""["t","bpm","o"]"""), payload["fields"]?.jsonObject?.get("heartRate"))
+      assertEquals(Json.parseToJsonElement("[[1791504000,1791504060,120,1]]"), payload["steps"])
+      assertEquals(
+        Json.parseToJsonElement(
+          """
+          [{"start":1791468000,"end":1791493200,"startISO":"2026-10-08T14:00:00Z","endISO":"2026-10-08T21:00:00Z","o":0,
+            "stages":[[1791468000,1791475200,"light"],[1791475200,1791482400,"deep"]]}]
+          """,
+        ),
+        payload["sleep"],
+      )
+      assertEquals(Json.parseToJsonElement("""["steps"]"""), payload["truncated"])
+      assertEquals(
+        2,
+        payload["counts"]
+          ?.jsonObject
+          ?.get("heartRate")
+          ?.jsonPrimitive
+          ?.int,
+      )
+      // Skin temperature is feature-gated and the fake provider does not support it.
+      assertEquals(Json.parseToJsonElement("""["skinTemperature"]"""), payload["unsupported"])
+      assertNull(payload["skinTemperature"])
+      // Sleep reads a day back; heart rate and steps read with slack on both sides.
+      val windows = source.detailQueries.toMap()
+      assertEquals(window("2026-10-07T15:00:00Z", "2026-10-09T15:00:00Z"), windows[HealthSampleType.Sleep])
+      assertEquals(window("2026-10-08T12:00:00Z", "2026-10-09T18:00:00Z"), windows[HealthSampleType.HeartRate])
+      assertEquals(window("2026-10-08T15:00:00Z", "2026-10-09T15:00:00Z"), windows[HealthSampleType.Hrv])
+    }
+
+  @Test
+  fun samplesHonorTypesAndLeaveOutTypesWithoutPermission() =
+    runTest {
+      val source =
+        FakeHealthDataSource(
+          granted = setOf(HealthMetric.HeartRate.readPermission, HealthConnectPermissions.READ_IN_BACKGROUND),
+          detailsFor = { _, _ -> HealthDetailPage(emptyList()) },
+        )
+
+      val payload =
+        payload(
+          HealthHandler(appContext(), source, clock).handleHealthSamples(
+            """{"startISO":"2026-10-09T09:00:00+09:00","endISO":"2026-10-09T21:00:00+09:00","types":["sleep","heartRate"]}""",
+          ),
+        )
+
+      assertEquals(listOf(HealthSampleType.HeartRate), source.detailQueries.map { it.first })
+      assertNull(payload["date"])
+      assertEquals("2026-10-09T00:00:00Z", payload["startISO"]?.jsonPrimitive?.content)
+      assertEquals(Json.parseToJsonElement("[]"), payload["heartRate"])
+      assertEquals(Json.parseToJsonElement("""["sleep"]"""), payload["missingPermissions"])
+      assertNull(payload["sleep"])
+      assertNull(payload["steps"])
+    }
+
+  @Test
+  fun samplesRejectBadRangesAndUnknownTypes() =
+    runTest {
+      val handler = HealthHandler(appContext(), FakeHealthDataSource(), clock)
+      for (
+      params in
+      listOf(
+        """{"date":"2026-10-11"}""",
+        """{"startISO":"2026-10-08T00:00:00Z","endISO":"2026-10-09T00:00:01Z"}""",
+        """{"endISO":"2026-10-09T00:00:00Z"}""",
+        """{"date":"2026-10-09","startISO":"2026-10-09T00:00:00Z"}""",
+        """{"types":["heartRate","blood"]}""",
+      )
+      ) {
+        assertEquals(params, "INVALID_REQUEST", handler.handleHealthSamples(params).error?.code)
+      }
+    }
+
+  @Test
+  fun aDayOfOneHertzHeartRateFitsThePayloadCap() =
+    runTest {
+      val start = Instant.parse("2026-10-08T15:00:00Z")
+      val source =
+        FakeHealthDataSource(
+          detailsFor = { type, _ ->
+            if (type == HealthSampleType.HeartRate) {
+              HealthDetailPage((0 until 86_400).map { HealthPointDetail(start.plusSeconds(it.toLong()), 60.0 + it % 90, "com.fitbit.FitbitMobile") })
+            } else {
+              HealthDetailPage(emptyList())
+            }
+          },
+        )
+
+      val result = HealthHandler(appContext(), source, clock).handleHealthSamples("""{"date":"2026-10-09","types":"heartRate"}""")
+
+      val size = payload(result).toString().length
+      assertEquals(
+        86_400,
+        payload(result)["counts"]
+          ?.jsonObject
+          ?.get("heartRate")
+          ?.jsonPrimitive
+          ?.int,
+      )
+      // About 17 bytes a sample: roughly 1.5 MB for a full day at 1 Hz.
+      assertTrue("$size bytes", size in 1_000_000 until HEALTH_SAMPLES_MAX_PAYLOAD_BYTES)
+    }
+
   private fun payload(result: ai.openclaw.app.gateway.GatewaySession.InvokeResult): JsonObject {
     assertTrue(result.error?.message, result.ok)
     return Json.parseToJsonElement(result.payloadJson ?: error("missing payload")).jsonObject
@@ -772,7 +939,10 @@ private class FakeHealthDataSource(
   private val samplesFor: (HealthMetric) -> List<HealthSample> = { emptyList() },
   private val planned: List<HealthPlannedExercise> = emptyList(),
   private val failing: Set<HealthMetric> = emptySet(),
+  private val detailsFor: (HealthSampleType, HealthWindow) -> HealthDetailPage = { _, _ -> HealthDetailPage(emptyList()) },
 ) : HealthDataSource {
+  val detailQueries = mutableListOf<Pair<HealthSampleType, HealthWindow>>()
+
   val totalsQueries = mutableListOf<Pair<HealthWindow, Set<HealthMetric>>>()
   val sampleQueries = mutableListOf<HealthMetric>()
 
@@ -847,5 +1017,15 @@ private class FakeHealthDataSource(
   ): List<HealthPlannedExercise> {
     if (HealthMetric.PlannedExercise in failing) throw IllegalStateException("plannedExercise unavailable")
     return planned
+  }
+
+  override suspend fun detailRecords(
+    context: Context,
+    window: HealthWindow,
+    type: HealthSampleType,
+  ): HealthDetailPage {
+    synchronized(detailQueries) { detailQueries += type to window }
+    if (type.metric in failing) throw IllegalStateException("${type.key} unavailable")
+    return detailsFor(type, window)
   }
 }

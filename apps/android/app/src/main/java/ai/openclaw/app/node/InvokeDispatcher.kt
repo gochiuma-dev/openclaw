@@ -123,6 +123,7 @@ class InvokeDispatcher(
       Command(OpenClawSmsCommand.Search.rawValue, smsHandler::handleSmsSearch, smsSearchGate),
       Command(OpenClawCallLogCommand.Search.rawValue, callLogHandler::handleCallLogSearch, callLogGate),
       Command(OpenClawHealthCommand.Summary.rawValue, healthHandler::handleHealthSummary, healthGate),
+      Command(OpenClawHealthCommand.Samples.rawValue, healthHandler::handleHealthSamples, healthGate),
       Command(OpenClawMobileUiCommand.Observe.rawValue, mobileUiHandler::handleObserve, mobileUiGate),
       Command(OpenClawMobileUiCommand.Act.rawValue, mobileUiHandler::handleAct, mobileUiGate),
       Command("debug.logs", { debugHandler.handleLogs() }, debugGate),

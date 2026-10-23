@@ -136,7 +136,10 @@ const androidEnums: EnumSpec[] = [
     ["Pedometer", "pedometer"],
   ]),
   enumSpec("OpenClawCallLogCommand", "callLog.", [["Search", "search"]]),
-  enumSpec("OpenClawHealthCommand", "health.", [["Summary", "summary"]]),
+  enumSpec("OpenClawHealthCommand", "health.", [
+    ["Summary", "summary"],
+    ["Samples", "samples"],
+  ]),
   enumSpec("OpenClawMobileUiCommand", "mobile.ui.", [
     ["Observe", "observe"],
     ["Act", "act"],

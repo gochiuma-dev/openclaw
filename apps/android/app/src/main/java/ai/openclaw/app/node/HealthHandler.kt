@@ -329,6 +329,13 @@ internal interface HealthDataSource {
     context: Context,
     window: HealthWindow,
   ): List<HealthPlannedExercise>
+
+  /** Every raw record of one health.samples type overlapping [window], read page by page. */
+  suspend fun detailRecords(
+    context: Context,
+    window: HealthWindow,
+    type: HealthSampleType,
+  ): HealthDetailPage = HealthDetailPage(emptyList())
 }
 
 internal object HealthConnectDataSource : HealthDataSource {
@@ -499,6 +506,12 @@ internal object HealthConnectDataSource : HealthDataSource {
       )
     }
 
+  override suspend fun detailRecords(
+    context: Context,
+    window: HealthWindow,
+    type: HealthSampleType,
+  ): HealthDetailPage = readHealthDetails(HealthConnectClient.getOrCreate(context), window, type)
+
   @Suppress("UNCHECKED_CAST")
   private val HealthMetric.anyRecordType: KClass<Record> get() = recordType as KClass<Record>
 
@@ -556,17 +569,7 @@ class HealthHandler internal constructor(
       } catch (err: IllegalArgumentException) {
         return nodeInvokeError("INVALID_REQUEST", err.message ?: "invalid health.summary params")
       }
-    when (dataSource.availability(appContext)) {
-      HealthConnectAvailability.Available -> {}
-
-      HealthConnectAvailability.UpdateRequired -> {
-        return nodeInvokeError("HEALTH_CONNECT_UPDATE_REQUIRED", "update Health Connect from Google Play")
-      }
-
-      HealthConnectAvailability.Unavailable -> {
-        return nodeInvokeError("HEALTH_CONNECT_UNAVAILABLE", "Health Connect is not available on this device")
-      }
-    }
+    unavailableError()?.let { return it }
     return try {
       val granted = dataSource.grantedPermissions(appContext)
       val access = dataSource.extendedAccessSupport(appContext)
@@ -586,6 +589,54 @@ class HealthHandler internal constructor(
       nodeInvokeError("HEALTH_UNAVAILABLE", err.message ?: "Health Connect query failed")
     }
   }
+
+  /**
+   * Handles health.samples: the raw per-sample records of one day (heart rate, sleep stages, HRV,
+   * SpO2, respiratory rate, skin temperature, steps) under the same opt-in and Health Connect
+   * grants as health.summary. Types without a grant are left out and named in missingPermissions.
+   */
+  suspend fun handleHealthSamples(paramsJson: String?): GatewaySession.InvokeResult {
+    val request =
+      try {
+        parseHealthSamplesRequest(paramsJson, clock)
+      } catch (err: IllegalArgumentException) {
+        return nodeInvokeError("INVALID_REQUEST", err.message ?: "invalid health.samples params")
+      }
+    unavailableError()?.let { return it }
+    return try {
+      val granted = dataSource.grantedPermissions(appContext)
+      val access = dataSource.extendedAccessSupport(appContext)
+      if (HealthMetric.entries.none { it.readPermission in granted && it.isSupported(access) }) {
+        return nodeInvokeError(
+          "HEALTH_PERMISSION_REQUIRED",
+          "allow OpenClaw to read health data in Health Connect (OpenClaw Settings → Phone Capabilities → Health Connect)",
+        )
+      }
+      val payload = collectHealthSamples(appContext, dataSource, request, granted, access, clock.zone).toString()
+      val bytes = payload.toByteArray(Charsets.UTF_8).size
+      if (bytes > HEALTH_SAMPLES_MAX_PAYLOAD_BYTES) {
+        nodeInvokeError(
+          "HEALTH_SAMPLES_TOO_LARGE",
+          "payload is $bytes bytes (limit $HEALTH_SAMPLES_MAX_PAYLOAD_BYTES); request fewer types or a shorter startISO/endISO range",
+        )
+      } else {
+        GatewaySession.InvokeResult.ok(payload)
+      }
+    } catch (err: CancellationException) {
+      throw err
+    } catch (err: SecurityException) {
+      refusedReadError(err)
+    } catch (err: Throwable) {
+      nodeInvokeError("HEALTH_UNAVAILABLE", err.message ?: "Health Connect query failed")
+    }
+  }
+
+  private fun unavailableError(): GatewaySession.InvokeResult? =
+    when (dataSource.availability(appContext)) {
+      HealthConnectAvailability.Available -> null
+      HealthConnectAvailability.UpdateRequired -> nodeInvokeError("HEALTH_CONNECT_UPDATE_REQUIRED", "update Health Connect from Google Play")
+      HealthConnectAvailability.Unavailable -> nodeInvokeError("HEALTH_CONNECT_UNAVAILABLE", "Health Connect is not available on this device")
+    }
 
   /**
    * Health Connect refuses reads from a backgrounded app unless READ_HEALTH_DATA_IN_BACKGROUND is
@@ -994,7 +1045,7 @@ internal fun parseHealthSummaryRequest(
   )
 }
 
-private fun parseHealthDate(
+internal fun parseHealthDate(
   params: JsonObject,
   key: String,
 ): LocalDate? {
@@ -1006,7 +1057,7 @@ private fun parseHealthDate(
   }
 }
 
-private fun dayWindow(
+internal fun dayWindow(
   day: LocalDate,
   zone: ZoneId,
   now: Instant,
