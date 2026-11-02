@@ -99,6 +99,7 @@ class SecurePrefs(
       "notifications.forwarding.maxEventsPerMinute"
     private const val notificationsForwardingSessionKeyPrefix = "notifications.forwarding.sessionKey"
     private const val installedAppsSharingEnabledKey = "device.apps.sharing.enabled"
+    private const val healthSummaryEnabledKey = "health.summary.enabled"
     private const val installedAppsDisclosureConsentVersionKey =
       "device.apps.prominentDisclosure.consentVersion"
     private const val currentInstalledAppsDisclosureConsentVersion = 1
@@ -204,6 +205,11 @@ class SecurePrefs(
   private val _installedAppsSharingEnabled =
     MutableStateFlow(loadInstalledAppsSharingEnabled())
   val installedAppsSharingEnabled: StateFlow<Boolean> = _installedAppsSharingEnabled
+
+  // Records the user's opt-in only; Health Connect keeps the per-type grants.
+  private val _healthSummaryEnabled =
+    MutableStateFlow(plainPrefs.getBoolean(healthSummaryEnabledKey, false))
+  val healthSummaryEnabled: StateFlow<Boolean> = _healthSummaryEnabled
 
   private val _accessibilityControlEnabled =
     MutableStateFlow(plainPrefs.getBoolean(accessibilityControlEnabledKey, false))
@@ -338,6 +344,8 @@ class SecurePrefs(
       putBoolean(installedAppsSharingEnabledKey, false)
       remove(installedAppsDisclosureConsentVersionKey)
     }
+
+  fun setHealthSummaryEnabled(value: Boolean) = _healthSummaryEnabled.persistBoolean(healthSummaryEnabledKey, value)
 
   fun setAccessibilityControlEnabled(value: Boolean) = _accessibilityControlEnabled.persistBoolean(accessibilityControlEnabledKey, value)
 

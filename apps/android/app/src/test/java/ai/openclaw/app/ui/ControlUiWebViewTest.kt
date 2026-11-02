@@ -193,6 +193,105 @@ class ControlUiWebViewTest {
     )
   }
 
+  @Test
+  @Config(sdk = [31])
+  fun gatewayDocumentLoadCarriesEdgeHeadersSoAnEdgeProxyAdmitsIt() {
+    val headers = mapOf("CF-Access-Client-Id" to "client.access", "CF-Access-Client-Secret" to "service-secret")
+    val url = "https://gateway.example.test/dashboard/main/~key/node-1"
+    val controller = Robolectric.buildActivity(ComponentActivity::class.java).setup()
+    controller.get().setContent {
+      OpenClawTheme(themeMode = AppearanceThemeMode.System) {
+        ControlUiWebView(
+          page =
+            NodeRuntime.GatewayControlPage(
+              baseUrl = "https://gateway.example.test",
+              tlsFingerprintSha256 = null,
+              edgeHeaders = { headers },
+            ),
+          url = url,
+        )
+      }
+    }
+    try {
+      idleMainLooper()
+      val webView = requireNotNull(findWebView(controller.get().window.decorView))
+      assertTrue(shadowOf(webView).lastLoadedUrl.startsWith(url))
+      assertEquals(headers, shadowOf(webView).lastAdditionalHttpHeaders)
+    } finally {
+      controller.pause().stop().destroy()
+      idleMainLooper()
+    }
+  }
+
+  @Test
+  fun edgeHeaders_travelOnlyOverHttpsToTheGatewayOrigin() {
+    val headers = mapOf("CF-Access-Client-Id" to "client.access", "CF-Access-Client-Secret" to "service-secret")
+    var reads = 0
+    val page =
+      NodeRuntime.GatewayControlPage(
+        baseUrl = "https://gateway.example.com:8443/openclaw",
+        tlsFingerprintSha256 = null,
+        edgeHeaders = {
+          reads += 1
+          headers
+        },
+      )
+
+    assertEquals(headers, controlUiEdgeHeaders(page, "https://gateway.example.com:8443/openclaw/dashboard/main"))
+    assertEquals(headers, controlUiEdgeHeaders(page, "https://GATEWAY.example.com:8443/openclaw/dashboard/main#nativeControlAuth=x"))
+    assertEquals(2, reads)
+
+    // Another host, port, or scheme never sees the service token, and the store is not even read.
+    assertEquals(emptyMap<String, String>(), controlUiEdgeHeaders(page, "https://attacker.example.com:8443/openclaw/"))
+    assertEquals(emptyMap<String, String>(), controlUiEdgeHeaders(page, "https://gateway.example.com/openclaw/"))
+    assertEquals(emptyMap<String, String>(), controlUiEdgeHeaders(page, "http://gateway.example.com:8443/openclaw/"))
+    assertEquals(emptyMap<String, String>(), controlUiEdgeHeaders(page, "https://gateway.example.com.attacker.test:8443/"))
+    assertEquals(emptyMap<String, String>(), controlUiEdgeHeaders(page, "about:blank"))
+    assertEquals(2, reads)
+  }
+
+  @Test
+  fun edgeHeaders_neverTravelOverCleartextGatewayRoutes() {
+    var reads = 0
+    val page =
+      NodeRuntime.GatewayControlPage(
+        baseUrl = "http://192.168.1.20:18789",
+        tlsFingerprintSha256 = null,
+        edgeHeaders = {
+          reads += 1
+          mapOf("CF-Access-Client-Secret" to "service-secret")
+        },
+      )
+
+    assertEquals(emptyMap<String, String>(), controlUiEdgeHeaders(page, "http://192.168.1.20:18789/dashboard/main"))
+    assertEquals(0, reads)
+  }
+
+  @Test
+  fun edgeHeaders_dropInvalidEntriesAndSurviveAFailingStore() {
+    val base = "https://gateway.example.test"
+    val url = "$base/dashboard/main"
+    val sanitized =
+      controlUiEdgeHeaders(
+        NodeRuntime.GatewayControlPage(
+          baseUrl = base,
+          tlsFingerprintSha256 = null,
+          edgeHeaders = { mapOf("CF-Access-Client-Id" to "client.access", "Host" to "evil.test", "X-Bad" to "line\nbreak") },
+        ),
+        url,
+      )
+    assertEquals(mapOf("CF-Access-Client-Id" to "client.access"), sanitized)
+
+    val failing =
+      NodeRuntime.GatewayControlPage(
+        baseUrl = base,
+        tlsFingerprintSha256 = null,
+        edgeHeaders = { throw IllegalStateException("keystore unavailable") },
+      )
+    assertEquals(emptyMap<String, String>(), controlUiEdgeHeaders(failing, url))
+    assertEquals(emptyMap<String, String>(), controlUiEdgeHeaders(NodeRuntime.GatewayControlPage(base, null), url))
+  }
+
   private fun sha256Hex(bytes: ByteArray): String =
     MessageDigest
       .getInstance("SHA-256")
