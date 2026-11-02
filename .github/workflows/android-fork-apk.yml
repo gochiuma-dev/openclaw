@@ -54,6 +54,12 @@ concurrency:
   group: android-fork-apk-${{ github.ref }}
   cancel-in-progress: false
 
+# 上流の android-release.yml と同じ値にそろえる。上流が package.json の
+# engines.node を上げたら、ここも合わせて上げる（古いと pnpm install の
+# preinstall で落ちる）。
+env:
+  NODE_VERSION: "24.22.1"
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -74,12 +80,12 @@ jobs:
       # でビルドが落ちる（実際に落ちた）。
       - uses: actions/setup-node@v7
         with:
-          node-version: "24.19.0"
+          node-version: ${{ env.NODE_VERSION }}
 
       - uses: ./.github/actions/setup-node-env
         with:
           cache-mode: off
-          node-version: "24.19.0"
+          node-version: ${{ env.NODE_VERSION }}
 
       - uses: gradle/actions/setup-gradle@v5
 
