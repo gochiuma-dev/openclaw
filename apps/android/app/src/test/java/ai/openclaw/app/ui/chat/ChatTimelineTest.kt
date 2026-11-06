@@ -8,9 +8,11 @@ import ai.openclaw.app.chat.ChatMessageProvenance
 import ai.openclaw.app.chat.ChatOutboxItem
 import ai.openclaw.app.chat.ChatOutboxStatus
 import ai.openclaw.app.chat.ChatPendingToolCall
+import ai.openclaw.app.chat.ChatQuestionPrompt
 import ai.openclaw.app.chat.ChatToolActivity
 import ai.openclaw.app.chat.ChatTranscriptMarker
 import ai.openclaw.app.chat.OUTBOX_OWNER_CHANGED_ERROR
+import ai.openclaw.app.gateway.QuestionRecord
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -18,6 +20,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatTimelineTest {
+  @Test
+  fun timelineShowsOnlyQuestionsStillAwaitingResolution() {
+    val record = QuestionRecord(id = "ask", questions = emptyList(), createdAtMs = 1_000, expiresAtMs = Long.MAX_VALUE, status = "pending")
+    val pending = ChatQuestionPrompt(record)
+    val prompts = listOf(
+      pending,
+      pending.copy(record = record.copy(id = "submitting"), submitting = true),
+      pending.copy(record = record.copy(id = "retry"), errorText = "Send failed"),
+      pending.copy(record = record.copy(id = "answered", status = "answered")),
+      pending.copy(record = record.copy(id = "cancelled", status = "cancelled")),
+      pending.copy(record = record.copy(id = "expired", expiresAtMs = 1)),
+      pending.copy(record = record.copy(id = "unavailable"), recoveryUnavailable = true),
+    )
+    val timeline = prepareChatHistory(emptyList(), "main", "main").buildTimeline(0, emptyList(), null, questions = prompts)
+    assertEquals(listOf("retry", "submitting", "ask"), timeline.items.filterIsInstance<ChatTimelineItem.QuestionPrompt>().map { it.prompt.record.id })
+  }
+
   @Test
   fun preparedQuietHistoryKeepsRawDetailsAndUnknownOutcomes() {
     val quiet = ChatToolActivity("wait", "process", "action: poll", "raw result", false)

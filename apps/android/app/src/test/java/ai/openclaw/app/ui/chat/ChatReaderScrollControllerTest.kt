@@ -300,7 +300,7 @@ class ChatReaderScrollControllerTest {
   }
 
   @Test
-  fun questionTerminalStateAndHydratedAnswersChangeContentVersion() {
+  fun terminalQuestionsDoNotChangeContentVersionAfterDisappearing() {
     val pending =
       ChatQuestionPrompt(
         QuestionRecord(
@@ -329,7 +329,7 @@ class ChatReaderScrollControllerTest {
       )
 
     assertNotEquals(pendingTimeline.latestContentVersion, unavailableTimeline.latestContentVersion)
-    assertNotEquals(answeredWithoutValues.latestContentVersion, answeredWithValues.latestContentVersion)
+    assertEquals(answeredWithoutValues.latestContentVersion, answeredWithValues.latestContentVersion)
   }
 
   @Test

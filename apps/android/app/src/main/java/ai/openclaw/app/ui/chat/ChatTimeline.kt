@@ -6,6 +6,7 @@ import ai.openclaw.app.chat.ChatOutboxItem
 import ai.openclaw.app.chat.ChatOutboxStatus
 import ai.openclaw.app.chat.ChatPendingToolCall
 import ai.openclaw.app.chat.ChatQuestionPrompt
+import ai.openclaw.app.chat.ChatQuestionStatus
 import ai.openclaw.app.chat.ChatToolActivity
 import ai.openclaw.app.chat.OUTBOX_OWNER_CHANGED_ERROR
 import ai.openclaw.app.i18n.nativeString
@@ -158,10 +159,11 @@ internal fun PreparedChatHistory.buildTimeline(
 ): ChatTimeline {
   val stream = streamingAssistantText?.trim()?.takeIf { it.isNotEmpty() }
   val latestTurnLive = pendingRunCount > 0 || pendingToolCalls.any { !it.isComplete } || stream != null
+  val visibleQuestions = questions.filter { it.status() in setOf(ChatQuestionStatus.Pending, ChatQuestionStatus.Submitting) }
   val sourceItems =
     buildList {
       // reverseLayout: index 0 renders bottom-most; queued commands are the newest user input.
-      questions.asReversed().forEach { prompt -> add(ChatTimelineItem.QuestionPrompt(prompt)) }
+      visibleQuestions.asReversed().forEach { prompt -> add(ChatTimelineItem.QuestionPrompt(prompt)) }
       outboxItems.asReversed().forEach { item -> add(ChatTimelineItem.OutboxCommand(item)) }
       recoveryOutboxItems.asReversed().forEach { item -> add(ChatTimelineItem.RecoveryOutboxCommand(item)) }
       if (recoveryOutboxItems.isNotEmpty()) add(ChatTimelineItem.OutboxRecoveryHeader(recoveryOutboxItems.size))
@@ -212,7 +214,7 @@ internal fun PreparedChatHistory.buildTimeline(
           pendingToolCalls,
           stream,
           outboxItems + recoveryOutboxItems,
-          questions,
+          visibleQuestions,
         )
       },
   )
