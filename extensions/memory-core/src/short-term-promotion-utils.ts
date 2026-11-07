@@ -35,7 +35,11 @@ const SHORT_TERM_SESSION_CORPUS_RE =
 export const SHORT_TERM_BASENAME_RE = /^(\d{4})-(\d{2})-(\d{2})(?:-[^/]+)?\.md$/;
 export const MAX_QUERY_HASHES = 32;
 export const MAX_RECALL_DAYS = 16;
-export const SHORT_TERM_RECALL_MAX_ENTRIES = 512;
+export const SHORT_TERM_RECALL_MAX_ENTRIES = 2048;
+// Nightly Dreaming ingestion rewrites hundreds of daily rows while searches add
+// a few, so retention prefers rows backed by a real recall. Past the default
+// deep-dreaming max age they can no longer promote and compete by recency again.
+const SHORT_TERM_RECALL_PRIORITY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const SHORT_TERM_RECALL_MAX_SNIPPET_CHARS = 800;
 const DREAMING_TRANSCRIPT_PROMPT_LINE_RE =
   /\[[^\]]*dreaming-narrative[^\]]*]\s*(?:User|Assistant):\s*Write a dream diary entry from these memory fragments:?/i;
@@ -437,7 +441,23 @@ export function compareStoreTimestampDesc(
   return rightMs > leftMs ? 1 : -1;
 }
 
-function compareShortTermRecallRetention(a: ShortTermRecallEntry, b: ShortTermRecallEntry): number {
+function hasPriorityRecall(entry: ShortTermRecallEntry, cutoffMs: number): boolean {
+  return (
+    Math.floor(entry.recallCount ?? 0) > 0 &&
+    parseStoreTimestampMs(entry.lastRecalledAt) >= cutoffMs
+  );
+}
+
+function compareShortTermRecallRetention(
+  a: ShortTermRecallEntry,
+  b: ShortTermRecallEntry,
+  priorityCutoffMs: number,
+): number {
+  const priorityDiff =
+    Number(hasPriorityRecall(b, priorityCutoffMs)) - Number(hasPriorityRecall(a, priorityCutoffMs));
+  if (priorityDiff !== 0) {
+    return priorityDiff;
+  }
   const lastDiff = compareStoreTimestampDesc(a.lastRecalledAt, b.lastRecalledAt);
   if (lastDiff !== 0) {
     return lastDiff;
@@ -466,8 +486,13 @@ export function enforceShortTermRecallStoreRetention(store: ShortTermRecallStore
   if (entries.length <= SHORT_TERM_RECALL_MAX_ENTRIES) {
     return 0;
   }
+  const newestMs = entries.reduce(
+    (newest, [, entry]) => Math.max(newest, parseStoreTimestampMs(entry.lastRecalledAt)),
+    Number.NEGATIVE_INFINITY,
+  );
+  const priorityCutoffMs = newestMs - SHORT_TERM_RECALL_PRIORITY_WINDOW_MS;
   const retained = entries
-    .toSorted(([, a], [, b]) => compareShortTermRecallRetention(a, b))
+    .toSorted(([, a], [, b]) => compareShortTermRecallRetention(a, b, priorityCutoffMs))
     .slice(0, SHORT_TERM_RECALL_MAX_ENTRIES);
   store.entries = Object.fromEntries(retained.toSorted(([a], [b]) => a.localeCompare(b)));
   return entries.length - retained.length;
