@@ -16,7 +16,11 @@ on:
         required: false
         type: string
       release_tag:
-        description: 作成する Release のタグ。省略すると android-fork-<短縮SHA>
+        description: 作成する Release のタグ。省略すると android-fork-v<版>-<焼き直し番号>
+        required: false
+        type: string
+      fork_build:
+        description: 同じ上流版での焼き直し番号（1〜49）。省略すると既存の Release から次の番号を自動で決める
         required: false
         type: string
       prerelease:
@@ -83,18 +87,53 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v5
 
+      # 版名は載せ替え元の上流リリース（ルートの package.json の version）にそろえる。
+      # versionCode は上流の決まり YYYYMMPP + 末尾 2 桁で、末尾をフォークの焼き直し番号に使う
+      # （同じ上流版で 01〜49）。上流は version.json を上げないので、放っておくと全部 2026.8.2 と名乗り、
+      # どのブランチから焼いた APK か端末でもゲートウェイでも区別できなかった。
+      # ここでの書き換えはこの実行の作業領域だけで、ブランチにはコミットしない。
+      - name: 版を付ける
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORK_BUILD: ${{ inputs.fork_build }}
+        run: |
+          set -euo pipefail
+          base="$(node -p 'require("./package.json").version')"
+          ymp="$(node --import ./scripts/tsx.mjs -e 'import("./scripts/lib/android-version.ts").then(m => console.log(String(m.canonicalAndroidVersionCode(process.argv[1])).slice(0, -2)))' "$base")"
+          if [ -n "${FORK_BUILD}" ]; then
+            n=$((10#${FORK_BUILD}))
+          else
+            last="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName --jq '.[].tagName' \
+              | sed -n "s/^android-fork-v${base//./\\.}-\([0-9][0-9]\)$/\1/p" | sort -n | tail -1)"
+            n=$(( ${last:+10#$last} + 1 ))
+          fi
+          if [ "$n" -lt 1 ] || [ "$n" -gt 49 ]; then
+            echo "::error::焼き直し番号 ${n} が範囲外（1〜49）。上流版 ${base} での焼き直しが多すぎる"
+            exit 1
+          fi
+          nn="$(printf '%02d' "$n")"
+          code="${ymp}${nn}"
+          node --import ./scripts/tsx.mjs scripts/android-pin-version.ts --from-gateway --version-code "$code"
+          {
+            echo "name=${base}"
+            echo "code=${code}"
+            echo "build=${nn}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Android version ${base} (${code}) fork build ${nn}"
+
       - name: ビルドする対象を記録する
         id: meta
         run: |
           set -euo pipefail
           sha="$(git rev-parse --short HEAD)"
           tag="${{ inputs.release_tag }}"
-          [ -n "$tag" ] || tag="android-fork-${sha}"
+          [ -n "$tag" ] || tag="android-fork-v${{ steps.version.outputs.name }}-${{ steps.version.outputs.build }}"
           {
             echo "sha=${sha}"
             echo "tag=${tag}"
           } >> "$GITHUB_OUTPUT"
-          echo "ref=$(git rev-parse HEAD) tag=${tag}"
+          echo "ref=$(git rev-parse HEAD) tag=${tag} version=${{ steps.version.outputs.name }} (${{ steps.version.outputs.code }})"
 
       # debug 署名の鍵を固定する。無いと runner が毎回新しい debug 鍵を作り、
       # 証明書が変わって端末で上書き更新できなくなる（9/22 と 10/10 で別鍵だった）。
