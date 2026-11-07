@@ -1,3 +1,13 @@
+<!--
+  targetPackage は**実値でなければならない**。`@string/application_id` のままだと
+  Firebase App Distribution の検証が
+  「Element 'intent' with attribute 'targetPackage' must provide a value,
+   not a reference」で APK を弾く（2026-09-09 に実際に踏んだ）。
+
+  manifestPlaceholders は AndroidManifest にしか展開されないので使えない。
+  source set で分けて、debug 側は src/debug/res/xml/shortcuts.xml が上書きする。
+  **applicationId を変えたら両方直すこと。**
+-->
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <capability

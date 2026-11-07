@@ -664,6 +664,36 @@ describe("gateway/node-command-policy", () => {
     expect(iosPairing.has("mobile.ui.act")).toBe(false);
   });
 
+  it("requires explicit gateway opt-in for Android Health Connect summaries", () => {
+    const node = {
+      platform: "android",
+      deviceFamily: "Android",
+      commands: ["health.summary"],
+    };
+    expect(resolveNodeCommandAllowlist({} as OpenClawConfig, node).has("health.summary")).toBe(
+      false,
+    );
+    // Withheld at connect until the operator opts in; the app then re-requests pairing.
+    expect(
+      resolveNodePairingCommandAllowlist({} as OpenClawConfig, node).has("health.summary"),
+    ).toBe(false);
+
+    const enabled = {
+      gateway: { nodes: { commands: { allow: ["health.summary"] } } },
+    } as OpenClawConfig;
+    expect(resolveNodePairingCommandAllowlist(enabled, node).has("health.summary")).toBe(true);
+    expect(resolveNodeCommandAllowlist(enabled, node).has("health.summary")).toBe(true);
+
+    const denied = {
+      gateway: {
+        nodes: {
+          commands: { allow: ["health.summary"], deny: ["health.summary"] },
+        },
+      },
+    } as OpenClawConfig;
+    expect(resolveNodeCommandAllowlist(denied, node).has("health.summary")).toBe(false);
+  });
+
   it("requires explicit gateway opt-in for iOS health summaries", () => {
     const node = {
       platform: "iOS 18.4.0",

@@ -29,6 +29,7 @@ class OpenClawProtocolConstantsTest {
         OpenClawCalendarCommand.NamespacePrefix to OpenClawCalendarCommand.entries.map { it.rawValue },
         OpenClawMotionCommand.NamespacePrefix to OpenClawMotionCommand.entries.map { it.rawValue },
         OpenClawCallLogCommand.NamespacePrefix to OpenClawCallLogCommand.entries.map { it.rawValue },
+        OpenClawHealthCommand.NamespacePrefix to OpenClawHealthCommand.entries.map { it.rawValue },
       )
 
     val commands = groups.flatMap { (prefix, values) -> values.onEach { assertTrue(it.startsWith(prefix)) } }

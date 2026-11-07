@@ -8,6 +8,7 @@ androidx-compose-bom = "2026.09.00"
 androidx-core = "1.19.1"
 androidx-core-splashscreen = "1.2.0"
 androidx-exifinterface = "1.4.2"
+androidx-health-connect = "1.1.0"
 androidx-lifecycle = "2.11.0"
 androidx-security = "1.1.0"
 androidx-test-ext = "1.3.0"
@@ -59,6 +60,7 @@ androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidx-core" }
 androidx-core-splashscreen = { module = "androidx.core:core-splashscreen", version.ref = "androidx-core-splashscreen" }
 androidx-exifinterface = { module = "androidx.exifinterface:exifinterface", version.ref = "androidx-exifinterface" }
+androidx-health-connect-client = { module = "androidx.health.connect:connect-client", version.ref = "androidx-health-connect" }
 androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "androidx-lifecycle" }
 androidx-lifecycle-viewmodel-ktx = { module = "androidx.lifecycle:lifecycle-viewmodel-ktx", version.ref = "androidx-lifecycle" }
 androidx-room-compiler = { module = "androidx.room3:room3-compiler", version.ref = "room" }

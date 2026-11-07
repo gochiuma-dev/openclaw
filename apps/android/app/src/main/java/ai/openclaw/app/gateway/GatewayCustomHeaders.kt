@@ -1,6 +1,25 @@
 package ai.openclaw.app.gateway
 
 /**
+ * One operator edit to a stored header. A blank [value] keeps whatever is already stored, so the
+ * editor never has to read a credential back out of the encrypted store just to re-save it.
+ */
+data class GatewayCustomHeaderDraft(
+  val name: String,
+  val value: String = "",
+  val removed: Boolean = false,
+) {
+  /**
+   * A data class prints every field, and this one travels through UI state that can end up in an
+   * exception message or a crash report. Report whether a value is present, never the value.
+   */
+  override fun toString(): String {
+    val shownValue = if (value.isEmpty()) "unset" else "redacted"
+    return "GatewayCustomHeaderDraft(name=$name, value=$shownValue, removed=$removed)"
+  }
+}
+
+/**
  * Operator-defined HTTP headers attached to gateway connections so gateways fronted by
  * authenticating reverse proxies (Cloudflare Access-style service tokens) stay reachable.
  * Header values are credentials: persist them only in SecurePrefs and never log them.
@@ -33,6 +52,33 @@ object GatewayCustomHeaders {
       result[name] = value
     }
     return result
+  }
+
+  /**
+   * Applies operator edits over the headers already stored for one gateway. Names match
+   * case-insensitively because HTTP field names are case-insensitive and a stored
+   * `CF-Access-Client-Id` must not end up beside a retyped `cf-access-client-id`.
+   */
+  fun merged(
+    stored: Map<String, String>,
+    drafts: List<GatewayCustomHeaderDraft>,
+  ): Map<String, String> {
+    val result = LinkedHashMap(stored)
+    for (draft in drafts) {
+      val name = draft.name.trim()
+      if (name.isEmpty()) continue
+      val storedName = result.keys.firstOrNull { it.equals(name, ignoreCase = true) }
+      if (draft.removed) {
+        storedName?.let(result::remove)
+        continue
+      }
+      val value = draft.value.trim()
+      // A name typed without a value leaves the stored secret alone; it never clears one.
+      if (value.isEmpty()) continue
+      if (storedName != null && storedName != name) result.remove(storedName)
+      result[name] = value
+    }
+    return sanitized(result)
   }
 
   private fun isTokenCharacter(character: Char): Boolean =
