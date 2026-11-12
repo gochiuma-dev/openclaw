@@ -6,6 +6,7 @@ const native = vi.hoisted(() => ({
   versions: { node: "26.6.0", bun: undefined as string | undefined },
   conflict: vi.fn(() => false),
   mainThread: true,
+  platform: "linux" as NodeJS.Platform,
 }));
 vi.mock("node:v8", async (original) => ({
   ...(await original<typeof import("node:v8")>()),
@@ -14,6 +15,9 @@ vi.mock("node:v8", async (original) => ({
 vi.mock("node:process", async (original) => ({
   ...(await original<typeof import("node:process")>()),
   versions: native.versions,
+  get platform() {
+    return native.platform;
+  },
 }));
 vi.mock("node:worker_threads", async (original) => ({
   ...(await original<typeof import("node:worker_threads")>()),
@@ -38,6 +42,7 @@ beforeEach(() => {
   native.start.mockReset();
   native.conflict.mockReset().mockReturnValue(false);
   native.versions.node = "26.6.0";
+  native.platform = "linux";
   native.mainThread = true;
   vi.spyOn(process, "getBuiltinModule").mockImplementation((id) =>
     id === "inspector"
@@ -185,4 +190,17 @@ describe("stall flight recorder", () => {
       expect(native.start).not.toHaveBeenCalled();
     },
   );
+});
+
+// Fork (upstream PR #181551): the automatic sampler stays off on macOS (#181120).
+it("does not start the automatic sampler on macOS", () => {
+  native.platform = "darwin";
+  const warn = vi.fn();
+  const recorder = createStallFlightRecorder(warn, () => 0);
+  recorders.push(recorder);
+  expect(native.start).not.toHaveBeenCalled();
+  expect(warn).toHaveBeenCalledWith(
+    "stall flight recorder unavailable: macos-native-profiler-deadlock-risk",
+  );
+  expect(recorder.sample({ startedAt: 0, endedAt: 1_500 })).toBeUndefined();
 });

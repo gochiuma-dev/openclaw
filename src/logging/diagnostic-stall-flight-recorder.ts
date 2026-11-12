@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { versions } from "node:process";
+import { platform, versions } from "node:process";
 import * as v8 from "node:v8";
 import { isMainThread } from "node:worker_threads";
 import { resolveOpenClawPackageRootSync } from "../infra/openclaw-root.js";
@@ -27,6 +27,13 @@ export function createStallFlightRecorder(
     typeof v8.startCpuProfile !== "function" ||
     Boolean(versions.bun) ||
     Number(versions.node.split(".")[0]) < 26;
+  // Fork (upstream PR #181551, not merged as of 2026.11.3): Darwin rwlocks can lose progress
+  // under SIGPROF, and Node MessagePorts use these locks. The continuous sampler wedged this
+  // Gateway on 11.1 (main thread in SiblingGroup::Disentangle -> uv_rwlock_wrlock, #181120).
+  if (!disabled && platform === "darwin") {
+    disabled = true;
+    warn("stall flight recorder unavailable: macos-native-profiler-deadlock-risk");
+  }
   let packageRoot: string | null = null;
   const stop = () => {
     disabled = true;
