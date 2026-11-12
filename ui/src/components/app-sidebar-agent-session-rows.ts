@@ -88,7 +88,12 @@ export function projectSidebarAgentSessionRows({
   const visibilityOptions = {
     agentId: selected,
     defaultAgentId,
-    filterByAgent: !allAgents,
+    // Fork: list only the selected agent's rows even when an owner filter loaded every agent.
+    // Upstream (#170072, #170865) shows an owner's sessions from all agents here; this deployment
+    // uses the owner filter to hide subagent and automation threads, and the cross-agent list then
+    // mixed in other agents' sessions. The query stays cross-agent, so agent-menu unread badges and
+    // resuming another agent's conversation keep working; only the visible list is narrowed.
+    filterByAgent: !grouped,
     showCron: host.sessionsShowCron,
     showSystem: host.sessionsShowSystem,
     archivedFilter: host.sessionsStatusFilter,

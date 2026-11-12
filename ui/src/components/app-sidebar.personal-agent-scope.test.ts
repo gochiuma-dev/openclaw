@@ -112,9 +112,15 @@ it("keeps selected owners across agents and resumes the selected agent's own con
       });
       expect(context.agentSelection.state.selectedId).toBe(row.agentId);
       expect(sidebar.getRouteSessionKey()).toBe(row.key);
-      expect(sidebar.querySelector('[data-session-key="agent:main:mine"]')).not.toBeNull();
+      // Fork: the visible list stays on the open conversation's agent (app-sidebar-agent-session-rows.ts).
+      const inResearch = row.agentId === "research";
+      expect(sidebar.querySelector('[data-session-key="agent:main:mine"]') !== null).toBe(
+        !inResearch,
+      );
       expect(sidebar.querySelector('[data-session-key="agent:research:shared"]')).toBeNull();
-      expect(sidebar.querySelector(`[data-session-key="${rows[2]!.key}"]`)).not.toBeNull();
+      expect(sidebar.querySelector(`[data-session-key="${rows[2]!.key}"]`) !== null).toBe(
+        inResearch,
+      );
     }
 
     bindChatPageSession(context, rows[0]!.key);
@@ -130,7 +136,8 @@ it("keeps selected owners across agents and resumes the selected agent's own con
     await selectSessionMenuValue(sidebar, "owner:other");
     await settleLitElement(sidebar);
     expect(sidebar.getRouteSessionKey()).toBe("agent:main:mine");
-    expect(sidebar.querySelector('[data-session-key="agent:research:shared"]')).not.toBeNull();
+    // Fork: that owner's rows in another agent stay out of the visible list.
+    expect(sidebar.querySelector('[data-session-key="agent:research:shared"]')).toBeNull();
     expect(sidebar.querySelector('[data-session-key="agent:main:mine"]')).toBeNull();
     await selectSessionMenuValue(sidebar, "owner:viewer");
 
