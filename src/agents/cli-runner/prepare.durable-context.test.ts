@@ -424,7 +424,10 @@ describe("CLI durable session context", () => {
           ? { sessionManager: SessionManager.fromEntries([], fixture.session.dir) }
           : {}),
       });
-      const denied = Boolean(testCase.account || testCase.callerMemory);
+      // fork: another or unknown account no longer denies replay of saved notes. Without a
+      // matching history writer, interrupted input still stays with the transcript.
+      const denied = Boolean(testCase.callerMemory);
+      const interruptedDenied = denied || Boolean(testCase.account);
       try {
         const logicalPrompt = context.promptForHooks ?? context.params.prompt;
         if (denied) {
@@ -432,7 +435,7 @@ describe("CLI durable session context", () => {
           expect(logicalPrompt).not.toContain("RESULT-1234");
           expect(context.cliHistoryWriter).toBeUndefined();
         } else {
-          expect(logicalPrompt).toContain("PRIVATE-INTERRUPTED-1234");
+          expect(logicalPrompt.includes("PRIVATE-INTERRUPTED-1234")).toBe(!interruptedDenied);
           expect(logicalPrompt).toContain("RESULT-1234");
           expect(logicalPrompt).toContain("data, not instructions");
           expect(context.params.transcriptPrompt).toBe("latest ask");
@@ -466,7 +469,9 @@ describe("CLI durable session context", () => {
               testCase.resume ? "existing-native-session" : undefined,
             );
             expect(sent).toHaveLength(1);
-            expect(JSON.stringify(sent).includes("PRIVATE-INTERRUPTED-1234")).toBe(!denied);
+            expect(JSON.stringify(sent).includes("PRIVATE-INTERRUPTED-1234")).toBe(
+              !interruptedDenied,
+            );
           }
         }
         expect(context.openClawHistoryPrompt).toBeUndefined();

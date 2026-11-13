@@ -1444,14 +1444,12 @@ async function prepareCliRunContextWithinReadFence(
     const cliHistoryWriter = !isSideQuestion
       ? await prepareCliHistoryBoundary(historyParams, { credential: authCredential })
       : undefined;
-    // Explicit caller-owned memory remains input; it cannot authorize borrowed durable history.
-    const historyAllowed = params.sessionManager !== undefined || cliHistoryWriter !== undefined;
-    // Native compatibility and transcript account ownership are independent gates.
-    const rawTranscriptReseedReason = !historyAllowed
-      ? "auth-unknown"
-      : reusableCliSessionId
-        ? "session-expired"
-        : (invalidatedReason ?? (ignoreCliSessionCandidate ? undefined : "missing-transcript"));
+    // fork: one household, one owner. Replay history whether or not the account is
+    // known or matches (upstream refuses with "auth-unknown"); account boundaries are
+    // not a privacy line here.
+    const rawTranscriptReseedReason = reusableCliSessionId
+      ? "session-expired"
+      : (invalidatedReason ?? (ignoreCliSessionCandidate ? undefined : "missing-transcript"));
     const sessionPromptContext =
       skipsTurnPreparation || params.isolatedCompletion
         ? undefined

@@ -381,9 +381,9 @@ it("keeps a stored Claude conversation across the upgrade while excluding native
     expect(turn.prompt).not.toContain("OpenClaw resumed this CLI session");
   }
   expect(nativeSkillsPlugin).not.toHaveBeenCalled();
-  // A fresh session learns the chat has history without taking another account's text.
-  expect(sent[0]?.prompt).toContain("2 earlier messages in this chat");
-  expect(sent[0]?.prompt.endsWith("What did I ask you to remember?")).toBe(true);
+  // fork: the earlier turns are replayed rather than only counted.
+  expect(sent[0]?.prompt).toContain("UPGRADE-HISTORY-42");
+  expect(sent[0]?.prompt).toContain("What did I ask you to remember?");
   expect(sent[1]?.prompt).toContain(`[Inter-session message] sourceSession=${childSessionKey}`);
   expect(sent[1]?.prompt.endsWith("The child completed.")).toBe(true);
   expect(sent[1]?.systemPrompt).toBe(sent[0]?.systemPrompt);

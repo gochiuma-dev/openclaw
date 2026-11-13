@@ -577,7 +577,8 @@ describe("canonical CLI history", () => {
     }
   });
 
-  it.each(["auth-profile", "auth-epoch", "auth-unknown"] as const)(
+  // fork: only an explicit auth-unknown reason still blocks; account changes replay history.
+  it.each(["auth-unknown"] as const)(
     "refuses history and durable notes across %s invalidations even when opted in",
     async (reason) => {
       const { params, manager } = await createSession(["previous account context"]);
@@ -706,7 +707,8 @@ describe("resumed Claude session gaps", () => {
           durableContext: undefined,
           reseedMessages: [],
         });
-        for (const reason of ["auth-profile", "auth-epoch", "auth-unknown"] as const) {
+        // fork: auth-profile / auth-epoch no longer block replay.
+        for (const reason of ["auth-unknown"] as const) {
           const fresh = {
             ...options,
             nativeSessionId: undefined,

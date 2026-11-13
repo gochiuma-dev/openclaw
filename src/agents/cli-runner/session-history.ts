@@ -588,10 +588,8 @@ export async function loadCliSessionPromptContext(
       ? resolveAdmittedRunActiveAssertion(params.admittedRunContext, params.abortSignal)
       : undefined;
   // Summaries and caller-owned history contain the same private context as the raw tail.
-  const contentBlocked =
-    params.rawTranscriptReseedReason === "auth-profile" ||
-    params.rawTranscriptReseedReason === "auth-epoch" ||
-    params.rawTranscriptReseedReason === "auth-unknown";
+  // fork: an account change (auth-profile / auth-epoch) still replays history; see prepare.ts.
+  const contentBlocked = params.rawTranscriptReseedReason === "auth-unknown";
   if (contentBlocked) {
     cliBackendLog.warn(
       `cli session history refused across auth boundary: reason=${params.rawTranscriptReseedReason}`,
